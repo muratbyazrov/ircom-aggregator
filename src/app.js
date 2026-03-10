@@ -65,8 +65,12 @@ export async function runApp() {
       for await (const message of client.iterMessages(entity, { limit: config.fetchLimit })) {
         scanned++;
         const text = message?.message?.trim?.() || '';
-        if (text.length < 10) continue;
-        if (config.onlyAds && !looksLikeAd(text, config.adKeywords)) {
+        const hasPhoto = Boolean(message?.photo);
+        const hasImageDoc = String(message?.media?.document?.mimeType || '').startsWith('image/');
+        const hasVisualMedia = hasPhoto || hasImageDoc;
+
+        if (!text && !hasVisualMedia) continue;
+        if (config.onlyAds && (!text || !looksLikeAd(text, config.adKeywords))) {
           skippedByFilter++;
           continue;
         }
@@ -88,9 +92,10 @@ export async function runApp() {
           title: structured.title,
           description: structured.description,
           price_value: structured.priceValue,
-          price_currency: structured.priceCurrency,
           contact_phone: structured.contactPhone,
           contact_username: structured.contactUsername,
+          contact_text: structured.contactText,
+          category: structured.category,
           photo_path: photoPath,
         });
 
@@ -118,4 +123,3 @@ export function handleFatalError(error) {
   logAuthError(error);
   process.exit(1);
 }
-

@@ -16,6 +16,7 @@ export function createPostsRepository(dbPath = 'data.db') {
 
   ensureSchema(db);
 
+  // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const upsertStmt = db.prepare(`
     INSERT INTO posts (
       source,
@@ -25,9 +26,10 @@ export function createPostsRepository(dbPath = 'data.db') {
       title,
       description,
       price_value,
-      price_currency,
       contact_phone,
       contact_username,
+      contact_text,
+      category,
       photo_path
     )
     VALUES (
@@ -38,9 +40,10 @@ export function createPostsRepository(dbPath = 'data.db') {
       @title,
       @description,
       @price_value,
-      @price_currency,
       @contact_phone,
       @contact_username,
+      @contact_text,
+      @category,
       @photo_path
     )
     ON CONFLICT(source, msg_id) DO UPDATE SET
@@ -49,12 +52,14 @@ export function createPostsRepository(dbPath = 'data.db') {
       title = excluded.title,
       description = excluded.description,
       price_value = excluded.price_value,
-      price_currency = excluded.price_currency,
       contact_phone = excluded.contact_phone,
       contact_username = excluded.contact_username,
+      contact_text = excluded.contact_text,
+      category = excluded.category,
       photo_path = COALESCE(excluded.photo_path, posts.photo_path)
   `);
 
+  // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const clearStmt = db.prepare('DELETE FROM posts');
 
   return {
@@ -71,6 +76,7 @@ export function createPostsRepository(dbPath = 'data.db') {
 }
 
 function ensureSchema(db) {
+  // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const columns = new Set(db.prepare('PRAGMA table_info(posts)').all().map((row) => row.name));
   const addColumnIfMissing = (columnName, sqlType) => {
     if (!columns.has(columnName)) {
@@ -82,9 +88,9 @@ function ensureSchema(db) {
   addColumnIfMissing('title', 'TEXT');
   addColumnIfMissing('description', 'TEXT');
   addColumnIfMissing('price_value', 'INTEGER');
-  addColumnIfMissing('price_currency', 'TEXT');
   addColumnIfMissing('contact_phone', 'TEXT');
   addColumnIfMissing('contact_username', 'TEXT');
+  addColumnIfMissing('contact_text', 'TEXT');
+  addColumnIfMissing('category', 'TEXT');
   addColumnIfMissing('photo_path', 'TEXT');
 }
-

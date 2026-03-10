@@ -28,3 +28,13 @@ npm start
 - `TG_PHOTOS_DIR`: media output folder
 - `TG_CLEAR_BEFORE_RUN`: clear `posts` table before each run
 
+## Stored fields (`posts`)
+
+- `title`: normalized listing title
+- `description`: listing body text
+- `price_value`: parsed price value (RUB)
+- `contact_phone`: comma-separated phones
+- `contact_username`: comma-separated Telegram usernames
+- `contact_text`: normalized contacts summary (e.g. `phone:+7999...; tg:@name`)
+- `category`: rule-based category (e.g. `Авто`, `Недвижимость`, `Электроника`)
+- `photo_path`: local photo path when available
