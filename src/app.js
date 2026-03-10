@@ -70,6 +70,8 @@ export async function runApp() {
 
       let saved = 0;
       let scanned = 0;
+      let skippedAsRepost = 0;
+      let skippedAsReply = 0;
       let skippedByFilter = 0;
       let skippedAsDuplicate = 0;
       let photosSaved = 0;
@@ -80,8 +82,18 @@ export async function runApp() {
         const hasPhoto = Boolean(message?.photo);
         const hasImageDoc = String(message?.media?.document?.mimeType || '').startsWith('image/');
         const hasVisualMedia = hasPhoto || hasImageDoc;
+        const isRepost = Boolean(message?.fwdFrom || message?.forward || message?.forwardInfo);
+        const isReply = Boolean(message?.replyTo || message?.replyToMsgId);
 
         if (!text && !hasVisualMedia) continue;
+        if (isReply) {
+          skippedAsReply++;
+          continue;
+        }
+        if (isRepost) {
+          skippedAsRepost++;
+          continue;
+        }
         if (config.onlyAds && (!text || !looksLikeAd(text, config.adKeywords))) {
           skippedByFilter++;
           continue;
@@ -130,7 +142,7 @@ export async function runApp() {
 
       totalSaved += saved;
       console.log(
-        `Scanned: ${scanned} | Saved: ${saved} | Duplicates: ${skippedAsDuplicate} | Skipped by filter: ${skippedByFilter} | Photos: ${photosSaved}`
+        `Scanned: ${scanned} | Saved: ${saved} | Replies: ${skippedAsReply} | Reposts: ${skippedAsRepost} | Duplicates: ${skippedAsDuplicate} | Skipped by filter: ${skippedByFilter} | Photos: ${photosSaved}`
       );
     }
 
