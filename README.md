@@ -31,8 +31,11 @@ npm start
 ## Stored fields (`posts`)
 
 - `title`: normalized listing title
+  Max length: 60 characters
 - `description`: listing body text
 - `price_value`: parsed price value (RUB)
+- `sender_id`: Telegram sender id when available
+- `content_hash`: normalized post content hash for de-duplication
 - `contact_phone`: comma-separated phones
 - `contact_username`: comma-separated Telegram usernames
 - `contact_text`: normalized contacts summary (e.g. `phone:+7999...; tg:@name`)

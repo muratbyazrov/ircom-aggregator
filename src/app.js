@@ -3,13 +3,24 @@ import { StringSession } from 'telegram/sessions/index.js';
 
 import { loadConfig } from './config.js';
 import { createPostsRepository } from './db/postsRepository.js';
-import { looksLikeAd, extractStructuredData } from './parsing/adParser.js';
+import { looksLikeAd, extractStructuredData, buildContentHash } from './parsing/adParser.js';
 import { createPhotoStorage } from './media/photoStorage.js';
 import { buildAuthParams, logAuthError } from './telegram/auth.js';
 
 function buildPermalink(entity, msgId) {
   const username = entity?.username;
   return username ? `https://t.me/${username}/${msgId}` : null;
+}
+
+function normalizeSenderId(senderId) {
+  if (senderId === null || senderId === undefined) return null;
+  if (typeof senderId === 'string') return senderId;
+  if (typeof senderId === 'number' || typeof senderId === 'bigint') return String(senderId);
+  if (typeof senderId?.toString === 'function') {
+    const value = senderId.toString();
+    return value && value !== '[object Object]' ? value : null;
+  }
+  return null;
 }
 
 export async function runApp() {
@@ -60,6 +71,7 @@ export async function runApp() {
       let saved = 0;
       let scanned = 0;
       let skippedByFilter = 0;
+      let skippedAsDuplicate = 0;
       let photosSaved = 0;
 
       for await (const message of client.iterMessages(entity, { limit: config.fetchLimit })) {
@@ -72,6 +84,18 @@ export async function runApp() {
         if (!text && !hasVisualMedia) continue;
         if (config.onlyAds && (!text || !looksLikeAd(text, config.adKeywords))) {
           skippedByFilter++;
+          continue;
+        }
+
+        const contentHash = buildContentHash(text);
+        const senderId = normalizeSenderId(message?.senderId);
+        if (db.hasDuplicateByContent({
+          source,
+          msgId: message.id,
+          senderId,
+          contentHash,
+        })) {
+          skippedAsDuplicate++;
           continue;
         }
 
@@ -92,6 +116,8 @@ export async function runApp() {
           title: structured.title,
           description: structured.description,
           price_value: structured.priceValue,
+          sender_id: senderId,
+          content_hash: contentHash,
           contact_phone: structured.contactPhone,
           contact_username: structured.contactUsername,
           contact_text: structured.contactText,
@@ -104,7 +130,7 @@ export async function runApp() {
 
       totalSaved += saved;
       console.log(
-        `Scanned: ${scanned} | Saved: ${saved} | Skipped by filter: ${skippedByFilter} | Photos: ${photosSaved}`
+        `Scanned: ${scanned} | Saved: ${saved} | Duplicates: ${skippedAsDuplicate} | Skipped by filter: ${skippedByFilter} | Photos: ${photosSaved}`
       );
     }
 

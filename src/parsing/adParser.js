@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+
+const MAX_TITLE_LENGTH = 60;
+
 const CATEGORY_RULES = [
   { name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin'] },
   { name: 'Недвижимость', keywords: ['квартир', 'дом', 'комнат', 'аренда', 'сдам', 'сдается', 'недвижим', 'офис', 'посуточно', 'ипотек'] },
@@ -50,6 +54,22 @@ export function extractStructuredData(text) {
   };
 }
 
+export function buildContentHash(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) return null;
+
+  const canonical = normalized
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[@#][\p{L}\p{N}_]+/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!canonical) return null;
+  return createHash('sha1').update(canonical, 'utf8').digest('hex');
+}
+
 function normalizeText(text) {
   return String(text || '').replace(/\u00a0/g, ' ').trim();
 }
@@ -75,7 +95,8 @@ function titleScore(line) {
   let score = 0;
   const plain = line.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
   const len = plain.length;
-  if (len >= 6 && len <= 90) score += 3;
+  if (len >= 6 && len <= 70) score += 3;
+  else if (len > 70 && len <= 100) score += 1;
   if (!isServiceLine(line)) score += 2;
   if (/(продам|куплю|сдам|iphone|samsung|toyota|bmw|nissan|квартир|дом|ноутбук|телефон)/i.test(line)) score += 2;
   if (/^\d/.test(line)) score -= 2;
@@ -88,7 +109,7 @@ function pickTitle(lines) {
   const best = [...lines]
     .map((line) => ({ line, score: titleScore(line) }))
     .sort((a, b) => b.score - a.score)[0];
-  return String(best?.line || lines[0]).slice(0, 140);
+  return String(best?.line || lines[0]).slice(0, MAX_TITLE_LENGTH);
 }
 
 function buildDescription(cleanText, title) {

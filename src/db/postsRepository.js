@@ -26,6 +26,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       title,
       description,
       price_value,
+      sender_id,
+      content_hash,
       contact_phone,
       contact_username,
       contact_text,
@@ -40,6 +42,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       @title,
       @description,
       @price_value,
+      @sender_id,
+      @content_hash,
       @contact_phone,
       @contact_username,
       @contact_text,
@@ -52,6 +56,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       title = excluded.title,
       description = excluded.description,
       price_value = excluded.price_value,
+      sender_id = excluded.sender_id,
+      content_hash = excluded.content_hash,
       contact_phone = excluded.contact_phone,
       contact_username = excluded.contact_username,
       contact_text = excluded.contact_text,
@@ -61,6 +67,24 @@ export function createPostsRepository(dbPath = 'data.db') {
 
   // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const clearStmt = db.prepare('DELETE FROM posts');
+  const findDuplicateWithSenderStmt = db.prepare(`
+    SELECT 1
+    FROM posts
+    WHERE source = @source
+      AND sender_id = @sender_id
+      AND content_hash = @content_hash
+      AND msg_id <> @msg_id
+    LIMIT 1
+  `);
+  const findDuplicateWithoutSenderStmt = db.prepare(`
+    SELECT 1
+    FROM posts
+    WHERE source = @source
+      AND sender_id IS NULL
+      AND content_hash = @content_hash
+      AND msg_id <> @msg_id
+    LIMIT 1
+  `);
 
   return {
     upsert(post) {
@@ -68,6 +92,24 @@ export function createPostsRepository(dbPath = 'data.db') {
     },
     clear() {
       return clearStmt.run().changes;
+    },
+    hasDuplicateByContent({ source, msgId, senderId, contentHash }) {
+      if (!source || !contentHash) return false;
+
+      if (senderId) {
+        return Boolean(findDuplicateWithSenderStmt.get({
+          source,
+          sender_id: senderId,
+          content_hash: contentHash,
+          msg_id: msgId,
+        }));
+      }
+
+      return Boolean(findDuplicateWithoutSenderStmt.get({
+        source,
+        content_hash: contentHash,
+        msg_id: msgId,
+      }));
     },
     close() {
       db.close();
@@ -88,6 +130,8 @@ function ensureSchema(db) {
   addColumnIfMissing('title', 'TEXT');
   addColumnIfMissing('description', 'TEXT');
   addColumnIfMissing('price_value', 'INTEGER');
+  addColumnIfMissing('sender_id', 'TEXT');
+  addColumnIfMissing('content_hash', 'TEXT');
   addColumnIfMissing('contact_phone', 'TEXT');
   addColumnIfMissing('contact_username', 'TEXT');
   addColumnIfMissing('contact_text', 'TEXT');
