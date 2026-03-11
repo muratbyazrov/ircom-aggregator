@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 const MAX_TITLE_LENGTH = 60;
+const PHONE_LIKE_RE = /(?:\+?\d[\d()\- ]{8,}\d)/g;
 
 const CATEGORY_RULES = [
   { name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'ваз', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin', 'л/с', 'мотор', 'привод', 'механика', 'бампер'] },
@@ -38,7 +39,7 @@ export function extractStructuredData(text) {
   const cleanText = normalizeText(text);
   const lines = splitLines(cleanText);
   const title = pickTitle(lines);
-  const description = buildDescription(cleanText, title);
+  const description = buildDescription(cleanText);
   const price = extractPrice(cleanText);
   const contacts = extractContacts(cleanText);
   const category = detectCategory(`${title || ''}\n${description || ''}`);
@@ -94,7 +95,10 @@ function titleScore(line) {
   if (isMetaLine(line)) return -50;
   let score = 0;
   const plain = line.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
-  if (normalizePhone(plain) || /^(?:\+?\d[\d\s\-()]{8,}\d)$/.test(line.trim())) score -= 12;
+  const phoneLikeCount = (line.match(PHONE_LIKE_RE) || []).length;
+  if (normalizePhone(plain) || /^(?:\+?\d[\d()\- ]{8,}\d)$/.test(line.trim())) score -= 12;
+  if (phoneLikeCount >= 2) score -= 10;
+  else if (phoneLikeCount === 1) score -= 5;
   const len = plain.length;
   if (len >= 6 && len <= 70) score += 3;
   else if (len > 70 && len <= 100) score += 1;
@@ -116,8 +120,9 @@ function pickTitle(lines) {
   const isGeneric = /^(продаю|продам|срочно|продаётся|продается)\b/i.test(String(best?.line || ''));
   const selected = isGeneric && scored[1] && scored[1].score >= best.score - 1 ? scored[1].line : best?.line;
   const fallbackSelected = String(selected || lines[0]).trim();
-  if (fallbackSelected.length >= 5 && fallbackSelected.split(/\s+/).length >= 2) {
-    return finalizeTitle(fallbackSelected);
+  const cleanedFallback = stripPhoneLikeChunks(fallbackSelected);
+  if (cleanedFallback.length >= 5 && cleanedFallback.split(/\s+/).length >= 2) {
+    return finalizeTitle(cleanedFallback);
   }
 
   const joined = lines
@@ -126,7 +131,7 @@ function pickTitle(lines) {
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return finalizeTitle(joined || fallbackSelected);
+  return finalizeTitle(stripPhoneLikeChunks(joined || fallbackSelected));
 }
 
 function finalizeTitle(value) {
@@ -148,13 +153,9 @@ function finalizeTitle(value) {
   return raw.slice(0, MAX_TITLE_LENGTH).trim();
 }
 
-function buildDescription(cleanText, title) {
+function buildDescription(cleanText) {
   if (!cleanText) return null;
-  const lines = splitLines(cleanText);
-  const titleIndex = lines.findIndex((line) => line === title);
-  const filtered = lines.filter((line, idx) => !(idx === titleIndex));
-  const result = filtered.join('\n').trim();
-  return (result || cleanText).slice(0, 4000);
+  return cleanText.slice(0, 4000);
 }
 
 function extractPrice(text) {
@@ -172,7 +173,7 @@ function extractPrice(text) {
     }
   }
 
-  const valueWithCurrency = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{2,9})\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс|k(?![a-z])|к(?![a-zа-я])|млн|m(?![a-z]))/gi;
+  const valueWithCurrency = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z]))/gi;
   let match;
   while ((match = valueWithCurrency.exec(rawWithoutPhones)) !== null) {
     const value = parseNumericPrice(match[1], match[2]);
@@ -189,6 +190,17 @@ function extractPrice(text) {
     candidates.push({ value: item.value, weight: item.weight + 2 });
   }
 
+  // Отдельная строка вида "350.000" или "1 700 000" без слова "цена":
+  // в объявлениях это часто и есть прайс.
+  const standaloneGrouped = rawWithoutPhones
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^\d{1,3}(?:[ .,\t]\d{3})+$/.test(line));
+  for (const item of standaloneGrouped) {
+    const groupedValue = parseNumericPrice(item, '');
+    if (groupedValue !== null) candidates.push({ value: groupedValue, weight: 2 });
+  }
+
   if (candidates.length === 0) return null;
 
   // Выбираем наибольший вес, при равенстве — более правдоподобную рыночную цену.
@@ -198,19 +210,31 @@ function extractPrice(text) {
 
 function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
   const result = [];
-  const re = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{2,9})(?:\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс|k(?![a-z])|к(?![a-zа-я])|млн|m(?![a-z])))?/gi;
+  const rawFragment = String(fragment || '');
+  const re = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)(?:\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z])))?/gi;
   let match;
-  while ((match = re.exec(String(fragment))) !== null) {
+  while ((match = re.exec(rawFragment)) !== null) {
     const hasSuffix = Boolean(match[2]);
     if (!hasSuffix) {
+      const bareToken = String(match[1] || '').trim();
+      const hasThousandsGrouping = /^\d{1,3}(?:[ .,\t]\d{3})+$/.test(bareToken);
+      const hasDecimalTail = /\d[.,]\d{1,2}$/.test(bareToken);
+      if (!allowBareNumber && !hasThousandsGrouping) continue;
+
+      const bareValue = parseNumericPrice(bareToken, '');
+      if (bareValue === null) continue;
+      if (hasDecimalTail && !hasThousandsGrouping) continue;
+
+      if (hasThousandsGrouping) {
+        result.push({ value: bareValue, weight: allowBareNumber ? 2 : 3 });
+        continue;
+      }
+
       if (!allowBareNumber) continue;
-      const bareDigits = String(match[1] || '').replace(/[^\d]/g, '');
-      if (!bareDigits) continue;
-      const bareValue = Number(bareDigits);
-      if (!Number.isFinite(bareValue)) continue;
       const matchIndex = match.index || 0;
-      const before = String(fragment).slice(Math.max(0, matchIndex - 18), matchIndex);
-      const nearPriceKeyword = /(цена|стоим|за|отдам|всего|итог|торг)/i.test(before);
+      const before = rawFragment.slice(Math.max(0, matchIndex - 18), matchIndex);
+      const after = rawFragment.slice(matchIndex + bareToken.length, matchIndex + bareToken.length + 12);
+      const nearPriceKeyword = /(цена|стоим|за|отдам|всего|итог|торг)/i.test(before) || /(торг|руб|₽)/i.test(after);
       if (!nearPriceKeyword) continue;
       if (bareValue >= 20 && bareValue <= 900) {
         // В локальных объявлениях "цена 48" обычно значит 48 000.
@@ -229,14 +253,27 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
 }
 
 function parseNumericPrice(rawNumber, rawSuffix) {
-  const digits = String(rawNumber || '').replace(/[^\d]/g, '');
-  if (!digits) return null;
-  let value = Number(digits);
-  if (!Number.isFinite(value)) return null;
+  const token = String(rawNumber || '').trim();
+  if (!token) return null;
 
   const suffix = String(rawSuffix || '').toLowerCase().replace(/[^a-zа-яё₽]/gi, '');
+  const hasSuffixMultiplier = ['т', 'тыс', 'k', 'к', 'млн', 'мл', 'm'].includes(suffix);
+  let value;
+
+  if (hasSuffixMultiplier) {
+    const decimalToken = token.replace(/\s+/g, '').replace(',', '.');
+    const decimalValue = Number(decimalToken);
+    if (!Number.isFinite(decimalValue)) return null;
+    value = decimalValue;
+  } else {
+    const digits = token.replace(/[^\d]/g, '');
+    if (!digits) return null;
+    value = Number(digits);
+    if (!Number.isFinite(value)) return null;
+  }
+
   if (['т', 'тыс', 'k', 'к'].includes(suffix)) value *= 1000;
-  if (['млн', 'm'].includes(suffix)) value *= 1000000;
+  if (['млн', 'мл', 'm'].includes(suffix)) value *= 1000000;
 
   if (value < 100) return null;
   if (value > 1000000000) return null;
@@ -244,13 +281,13 @@ function parseNumericPrice(rawNumber, rawSuffix) {
 }
 
 function stripPhoneLikeNumbers(text) {
-  return String(text || '').replace(/(?:\+?\d[\d\s\-()]{8,}\d)/g, ' ');
+  return String(text || '').replace(PHONE_LIKE_RE, ' ');
 }
 
 function extractContacts(text) {
   const normalized = String(text || '');
 
-  const phoneMatches = normalized.match(/(?:\+?\d[\d\s\-()]{8,}\d)/g) || [];
+  const phoneMatches = normalized.match(PHONE_LIKE_RE) || [];
   const phones = phoneMatches
     .map((phone) => normalizePhone(phone))
     .filter(Boolean);
@@ -279,12 +316,40 @@ function extractContacts(text) {
 }
 
 function normalizePhone(value) {
-  const cleaned = String(value || '').replace(/[^\d+]/g, '');
-  if (!cleaned) return null;
-  if (cleaned.startsWith('+') && cleaned.length >= 11 && cleaned.length <= 16) return cleaned;
-  if (!cleaned.startsWith('+') && cleaned.length >= 10 && cleaned.length <= 15) return `+${cleaned}`;
+  const raw = String(value || '').trim();
+  const hasLeadingPlus = raw.startsWith('+');
+  const digits = raw.replace(/[^\d]/g, '');
+  if (!digits) return null;
+
+  if (hasLeadingPlus) {
+    const plusPhone = `+${digits}`;
+    if (plusPhone.length >= 11 && plusPhone.length <= 16) return plusPhone;
+    return null;
+  }
+
+  if (digits.length === 11 && digits.startsWith('8')) {
+    return `+7${digits.slice(1)}`;
+  }
+  if (digits.length === 10) {
+    return `+7${digits}`;
+  }
+  if (digits.length >= 11 && digits.length <= 15) {
+    return `+${digits}`;
+  }
   return null;
 }
+
+function stripPhoneLikeChunks(text) {
+  const original = String(text || '').trim();
+  if (!original) return '';
+  const cleaned = original
+    .replace(PHONE_LIKE_RE, ' ')
+    .replace(/^[^a-zа-яё0-9]+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length >= 5 ? cleaned : original;
+}
+
 
 function detectCategory(text) {
   const normalized = String(text || '').toLowerCase();
