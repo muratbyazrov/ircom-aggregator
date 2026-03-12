@@ -27,6 +27,15 @@ npm start
 - `TG_SAVE_PHOTOS`: `true/false` media download
 - `TG_PHOTOS_DIR`: media output folder
 - `TG_CLEAR_BEFORE_RUN`: clear `posts` table before each run
+- `TG_POST_API_ENABLED`: `true/false` send parsed posts to backend API
+- `TG_POST_API_URL`: backend endpoint (same as frontend `VITE_IRCOM_API_URL`)
+- `TG_POST_API_ACCOUNT_ID`: account id used in `createListing` payload
+- `TG_POST_API_KIND`: listing kind (`1` for ad, `2` for service)
+- `TG_POST_API_DEFAULT_CATEGORY`: fallback category when parser returns null
+- `TG_POST_API_DEFAULT_PRICE`: fallback price when parser cannot extract one
+- `TG_POST_API_TIMEOUT_MS`: HTTP timeout for backend posting
+- `TG_S3_PUBLIC_BASE_URL`: optional public base URL for photo URL normalization
+- `TG_S3_MAX_UPLOAD_BYTES`: max upload size (bytes) for one image (default `10485760`)
 
 ## Stored fields (`posts`)
 

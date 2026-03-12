@@ -69,6 +69,15 @@ export function loadConfig() {
     session: process.env.TG_SESSION || '',
     sources: resolveSources(),
     adKeywords: resolveAdKeywords(),
+    postApiEnabled: parseBool(process.env.TG_POST_API_ENABLED, false),
+    postApiUrl: String(process.env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
+    postApiAccountId: Number(process.env.TG_POST_API_ACCOUNT_ID || 0),
+    postApiKind: Number(process.env.TG_POST_API_KIND || 1),
+    postApiDefaultCategory: String(process.env.TG_POST_API_DEFAULT_CATEGORY || 'Другое').trim(),
+    postApiDefaultPrice: Number(process.env.TG_POST_API_DEFAULT_PRICE || 1),
+    postApiTimeoutMs: Number(process.env.TG_POST_API_TIMEOUT_MS || 15000),
+    s3PublicBaseUrl: String(process.env.TG_S3_PUBLIC_BASE_URL || '').trim(),
+    s3MaxUploadBytes: Number(process.env.TG_S3_MAX_UPLOAD_BYTES || 10485760),
   };
 
   validateConfig(config);
@@ -90,5 +99,24 @@ function validateConfig(config) {
       'No sources configured. Add TG_SOURCES in .env, e.g. TG_SOURCES=@channel1,@channel2,https://t.me/some_group'
     );
   }
+  if (config.postApiEnabled) {
+    if (!config.postApiUrl) {
+      throw new Error('Invalid TG_POST_API_URL in .env. Expected a non-empty HTTP endpoint.');
+    }
+    if (!Number.isInteger(config.postApiAccountId) || config.postApiAccountId <= 0) {
+      throw new Error('Invalid TG_POST_API_ACCOUNT_ID in .env. Expected a positive integer account id.');
+    }
+    if (![1, 2].includes(config.postApiKind)) {
+      throw new Error('Invalid TG_POST_API_KIND in .env. Expected 1 (ad) or 2 (service).');
+    }
+    if (!Number.isFinite(config.postApiDefaultPrice) || config.postApiDefaultPrice <= 0) {
+      throw new Error('Invalid TG_POST_API_DEFAULT_PRICE in .env. Expected a positive number.');
+    }
+    if (!Number.isInteger(config.postApiTimeoutMs) || config.postApiTimeoutMs <= 0) {
+      throw new Error('Invalid TG_POST_API_TIMEOUT_MS in .env. Expected a positive integer.');
+    }
+    if (!Number.isFinite(config.s3MaxUploadBytes) || config.s3MaxUploadBytes <= 0) {
+      throw new Error('Invalid TG_S3_MAX_UPLOAD_BYTES in .env. Expected a positive number.');
+    }
+  }
 }
-
