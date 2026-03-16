@@ -171,13 +171,15 @@ export function createMediaUploader(config) {
       }
     }
 
-    return photoUrl
-      || normalizePhotoReference(buildPhotoUrlFromUpload(init.upload.url, init.objectKey), publicBaseUrl)
-      || normalizePhotoReference(init.objectKey, publicBaseUrl);
+    return {
+      objectKey: init.objectKey,
+      photoUrl: photoUrl
+        || normalizePhotoReference(buildPhotoUrlFromUpload(init.upload.url, init.objectKey), publicBaseUrl)
+        || normalizePhotoReference(init.objectKey, publicBaseUrl),
+    };
   }
 
   return {
     uploadPhotoFromPath,
   };
 }
-

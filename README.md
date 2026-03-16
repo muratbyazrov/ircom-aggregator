@@ -34,6 +34,7 @@ npm start
 - `TG_POST_API_DEFAULT_CATEGORY`: fallback category when parser returns null
 - `TG_POST_API_DEFAULT_PRICE`: fallback price when parser cannot extract one
 - `TG_POST_API_TIMEOUT_MS`: HTTP timeout for backend posting
+- `TG_RETENTION_DAYS`: TTL in days for old aggregator records; on startup removes expired local posts and imported backend listings
 - `TG_S3_PUBLIC_BASE_URL`: optional public base URL for photo URL normalization
 - `TG_S3_MAX_UPLOAD_BYTES`: max upload size (bytes) for one image (default `10485760`)
 
@@ -50,3 +51,6 @@ npm start
 - `contact_text`: normalized contacts summary (e.g. `phone:+7999...; tg:@name`)
 - `category`: rule-based category (e.g. `Авто`, `Недвижимость`, `Электроника`)
 - `photo_path`: local photo path when available
+
+When `TG_POST_API_ENABLED=true`, the aggregator also sends backend import metadata:
+`source`, `msgId`, `date`, `permalink`, `contentHash`, `photoObjectKeys`.

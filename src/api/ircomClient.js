@@ -60,6 +60,52 @@ export function createIrcomApiClient(config) {
     }
   }
 
-  return { createListing };
-}
+  async function cleanupImportedListings(params) {
+    if (!enabled) {
+      return { skipped: true, reason: 'disabled' };
+    }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          domain: 'listing',
+          event: 'cleanupImportedListings',
+          params,
+        }),
+        signal: controller.signal,
+      });
+
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(parseErrorMessage(payload) || `HTTP ${response.status}`);
+      }
+      if (payload?.error) {
+        throw new Error(parseErrorMessage(payload));
+      }
+
+      return { skipped: false, data: payload?.data ?? payload };
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`Request timeout after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  return { createListing, cleanupImportedListings };
+}

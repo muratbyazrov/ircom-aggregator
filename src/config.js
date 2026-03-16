@@ -76,6 +76,7 @@ export function loadConfig() {
     postApiDefaultCategory: String(process.env.TG_POST_API_DEFAULT_CATEGORY || 'Другое').trim(),
     postApiDefaultPrice: Number(process.env.TG_POST_API_DEFAULT_PRICE || 1),
     postApiTimeoutMs: Number(process.env.TG_POST_API_TIMEOUT_MS || 15000),
+    retentionDays: Number(process.env.TG_RETENTION_DAYS || 0),
     s3PublicBaseUrl: String(process.env.TG_S3_PUBLIC_BASE_URL || '').trim(),
     s3MaxUploadBytes: Number(process.env.TG_S3_MAX_UPLOAD_BYTES || 10485760),
   };
@@ -93,6 +94,9 @@ function validateConfig(config) {
   }
   if (!Number.isInteger(config.fetchLimit) || config.fetchLimit <= 0) {
     throw new Error('Invalid TG_FETCH_LIMIT in .env. Expected a positive integer.');
+  }
+  if (!Number.isInteger(config.retentionDays) || config.retentionDays < 0) {
+    throw new Error('Invalid TG_RETENTION_DAYS in .env. Expected an integer >= 0.');
   }
   if (config.sources.length === 0) {
     throw new Error(

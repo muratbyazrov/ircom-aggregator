@@ -120,7 +120,24 @@ function pickTitle(lines) {
   const isGeneric = /^(продаю|продам|срочно|продаётся|продается)\b/i.test(String(best?.line || ''));
   const selected = isGeneric && scored[1] && scored[1].score >= best.score - 1 ? scored[1].line : best?.line;
   const fallbackSelected = String(selected || lines[0]).trim();
-  const cleanedFallback = stripPhoneLikeChunks(fallbackSelected);
+  const cleanedFallback = cleanupTitleCandidate(stripPhoneLikeChunks(fallbackSelected));
+  const leadingJoined = cleanupTitleCandidate(
+    stripPhoneLikeChunks(
+      lines
+        .slice(0, 3)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    ),
+  );
+  if (
+    leadingJoined &&
+    cleanedFallback &&
+    leadingJoined.startsWith(cleanedFallback) &&
+    leadingJoined.length >= cleanedFallback.length + 10
+  ) {
+    return finalizeTitle(leadingJoined);
+  }
   if (cleanedFallback.length >= 5 && cleanedFallback.split(/\s+/).length >= 2) {
     return finalizeTitle(cleanedFallback);
   }
@@ -131,11 +148,11 @@ function pickTitle(lines) {
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return finalizeTitle(stripPhoneLikeChunks(joined || fallbackSelected));
+  return finalizeTitle(cleanupTitleCandidate(stripPhoneLikeChunks(joined || fallbackSelected)));
 }
 
 function finalizeTitle(value) {
-  const raw = String(value || '').replace(/\s+/g, ' ').trim();
+  const raw = cleanupTitleCandidate(String(value || '').replace(/\s+/g, ' ').trim());
   if (!raw) return '';
   if (raw.length <= MAX_TITLE_LENGTH) return raw;
 
@@ -226,6 +243,16 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
       if (hasDecimalTail && !hasThousandsGrouping) continue;
 
       if (hasThousandsGrouping) {
+        if (/^\d{1,3}[.,]\d{3}$/.test(bareToken)) {
+          const matchIndex = match.index || 0;
+          const before = rawFragment.slice(Math.max(0, matchIndex - 18), matchIndex);
+          const after = rawFragment.slice(matchIndex + bareToken.length, matchIndex + bareToken.length + 12);
+          const nearPriceKeyword = /(цена|стоим|за|отдам|всего|итог|торг)/i.test(before) || /(торг|руб|₽)/i.test(after);
+          if (nearPriceKeyword) {
+            // "цена 1,300" в OCR локальных объявлений почти всегда означает 1 300 000.
+            result.push({ value: bareValue * 1000, weight: (allowBareNumber ? 2 : 3) + 1 });
+          }
+        }
         result.push({ value: bareValue, weight: allowBareNumber ? 2 : 3 });
         continue;
       }
@@ -236,6 +263,10 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
       const after = rawFragment.slice(matchIndex + bareToken.length, matchIndex + bareToken.length + 12);
       const nearPriceKeyword = /(цена|стоим|за|отдам|всего|итог|торг)/i.test(before) || /(торг|руб|₽)/i.test(after);
       if (!nearPriceKeyword) continue;
+      if (/^\d{1,3}[.,]\d{3}$/.test(bareToken)) {
+        // OCR часто склеивает "1 300 000" в "1,300" рядом со словом "цена".
+        result.push({ value: bareValue * 1000, weight: 3 });
+      }
       if (bareValue >= 20 && bareValue <= 900) {
         // В локальных объявлениях "цена 48" обычно значит 48 000.
         result.push({ value: bareValue * 1000, weight: 2 });
@@ -348,6 +379,15 @@ function stripPhoneLikeChunks(text) {
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned.length >= 5 ? cleaned : original;
+}
+
+function cleanupTitleCandidate(text) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+(?:цена|стоимость)\s+\d[\d.,\s]{0,24}$/i, '')
+    .replace(/\s+(?:цена|стоимость)\s*$/i, '')
+    .replace(/[,:;.-]+\s*$/g, '')
+    .trim();
 }
 
 

@@ -41,6 +41,23 @@ function getGroupedId(message) {
   return value && value !== '[object Object]' ? value : null;
 }
 
+function buildRetentionCutoffIso(retentionDays) {
+  if (!Number.isInteger(retentionDays) || retentionDays <= 0) return null;
+  return new Date(Date.now() - (retentionDays * 24 * 60 * 60 * 1000)).toISOString();
+}
+
+function cleanupLocalPhotos(photoPaths) {
+  for (const photoPath of photoPaths) {
+    const normalizedPath = String(photoPath || '').trim();
+    if (!normalizedPath || !fs.existsSync(normalizedPath)) continue;
+    try {
+      fs.unlinkSync(normalizedPath);
+    } catch {
+      // Ignore cleanup errors for local photos.
+    }
+  }
+}
+
 function buildMessageUnits(messages) {
   const grouped = new Map();
   for (const message of messages) {
@@ -101,6 +118,36 @@ export async function runApp() {
     if (config.clearBeforeRun) {
       const deletedRows = db.clear();
       console.log(`\nDB cleanup enabled: removed ${deletedRows} rows from posts`);
+    }
+
+    const retentionCutoffIso = buildRetentionCutoffIso(config.retentionDays);
+    if (retentionCutoffIso) {
+      const expiredPosts = db.getExpiredBefore(retentionCutoffIso);
+      if (expiredPosts.length > 0) {
+        cleanupLocalPhotos(expiredPosts.map((post) => post.photo_path));
+      }
+      const deletedExpiredPosts = db.deleteExpiredBefore(retentionCutoffIso);
+
+      if (config.postApiEnabled) {
+        try {
+          const cleanupResult = await postApi.cleanupImportedListings({
+            accountId: config.postApiAccountId,
+            kind: config.postApiKind,
+            olderThan: retentionCutoffIso,
+          });
+          const deletedListings = Number(cleanupResult?.data?.deletedListings || 0);
+          const deletedPhotos = Number(cleanupResult?.data?.deletedPhotos || 0);
+          const failedPhotos = Number(cleanupResult?.data?.failedPhotos || 0);
+          console.log(
+            `\nTTL cleanup: removed ${deletedExpiredPosts} local posts, ${deletedListings} backend listings, ${deletedPhotos} S3 objects`
+              + (failedPhotos > 0 ? ` (${failedPhotos} S3 deletions failed)` : '')
+          );
+        } catch (err) {
+          console.error(`TTL cleanup failed: ${err?.message || err}`);
+        }
+      } else if (deletedExpiredPosts > 0) {
+        console.log(`\nTTL cleanup: removed ${deletedExpiredPosts} local posts`);
+      }
     }
 
     console.log(`\nSources configured: ${config.sources.length}`);
@@ -206,13 +253,13 @@ export async function runApp() {
           photo_path: photoPaths[0] || null,
         });
 
-        const uploadedPhotoUrls = [];
+        const uploadedPhotos = [];
         if (config.postApiEnabled && photoPaths.length > 0) {
           for (const photoPath of photoPaths.slice(0, MAX_PHOTOS_PER_LISTING)) {
             try {
-              const uploadedPhotoUrl = await mediaUploader.uploadPhotoFromPath(photoPath);
-              if (uploadedPhotoUrl) {
-                uploadedPhotoUrls.push(uploadedPhotoUrl);
+              const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath);
+              if (uploadedPhoto?.photoUrl) {
+                uploadedPhotos.push(uploadedPhoto);
                 uploadedPhotosToApi++;
               }
             } catch (err) {
@@ -230,7 +277,17 @@ export async function runApp() {
             title: structured.title || 'Объявление',
             description: structured.description || text || '',
             price: Number(structured.priceValue) || config.postApiDefaultPrice || 1,
-            photos: uploadedPhotoUrls,
+            photos: uploadedPhotos.map((photo) => photo.photoUrl),
+            importMeta: {
+              source,
+              msgId: primaryMessage.id,
+              date: primaryMessage.date?.toISOString?.() || new Date().toISOString(),
+              permalink: buildPermalink(entity, primaryMessage.id),
+              contentHash,
+              photoObjectKeys: uploadedPhotos
+                .map((photo) => String(photo?.objectKey || '').trim())
+                .filter(Boolean),
+            },
           });
           if (config.postApiEnabled) {
             postedToApi++;
@@ -241,13 +298,7 @@ export async function runApp() {
         }
 
         if (config.postApiEnabled && !config.savePhotos && photoPaths.length > 0) {
-          for (const photoPath of photoPaths) {
-            try {
-              fs.unlinkSync(photoPath);
-            } catch {
-              // Ignore cleanup errors for temporary files.
-            }
-          }
+          cleanupLocalPhotos(photoPaths);
         }
 
         saved++;

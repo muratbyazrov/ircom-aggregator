@@ -67,6 +67,17 @@ export function createPostsRepository(dbPath = 'data.db') {
 
   // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const clearStmt = db.prepare('DELETE FROM posts');
+  const findExpiredStmt = db.prepare(`
+    SELECT
+      source,
+      msg_id,
+      date,
+      photo_path
+    FROM posts
+    WHERE date < @cutoff_date
+    ORDER BY date ASC
+  `);
+  const deleteExpiredStmt = db.prepare('DELETE FROM posts WHERE date < @cutoff_date');
   const findDuplicateWithSenderStmt = db.prepare(`
     SELECT 1
     FROM posts
@@ -92,6 +103,12 @@ export function createPostsRepository(dbPath = 'data.db') {
     },
     clear() {
       return clearStmt.run().changes;
+    },
+    getExpiredBefore(cutoffDate) {
+      return findExpiredStmt.all({ cutoff_date: cutoffDate });
+    },
+    deleteExpiredBefore(cutoffDate) {
+      return deleteExpiredStmt.run({ cutoff_date: cutoffDate }).changes;
     },
     hasDuplicateByContent({ source, msgId, senderId, contentHash }) {
       if (!source || !contentHash) return false;
