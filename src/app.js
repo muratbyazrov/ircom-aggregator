@@ -66,6 +66,12 @@ function splitMultiValueField(value) {
     .filter(Boolean);
 }
 
+function getFirstMultiValue(value, { prefix = '' } = {}) {
+  const firstValue = splitMultiValueField(value)[0] || null;
+  if (!firstValue) return null;
+  return prefix && !firstValue.startsWith(prefix) ? `${prefix}${firstValue}` : firstValue;
+}
+
 function buildTitleFingerprint(value) {
   const normalized = String(value || '')
     .toLowerCase()
@@ -497,6 +503,9 @@ export async function runApp() {
         }
 
         try {
+          const listingPhone = getFirstMultiValue(structured.contactPhone);
+          const listingTelegram = getFirstMultiValue(structured.contactUsername, { prefix: '@' });
+
           await postApi.createListing({
             accountId: config.postApiAccountId,
             kind: config.postApiKind,
@@ -504,6 +513,8 @@ export async function runApp() {
             title: structured.title || 'Объявление',
             description: structured.description || text || '',
             price: Number(structured.priceValue) || config.postApiDefaultPrice || 1,
+            ...(listingPhone ? { phone: listingPhone } : {}),
+            ...(listingTelegram ? { telegram: listingTelegram } : {}),
             photos: uploadedPhotos.map((photo) => photo.photoUrl),
             importMeta: {
               source,
