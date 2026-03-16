@@ -26,6 +26,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       title,
       description,
       price_value,
+      dedupe_key,
       sender_id,
       content_hash,
       contact_phone,
@@ -42,6 +43,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       @title,
       @description,
       @price_value,
+      @dedupe_key,
       @sender_id,
       @content_hash,
       @contact_phone,
@@ -56,6 +58,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       title = excluded.title,
       description = excluded.description,
       price_value = excluded.price_value,
+      dedupe_key = excluded.dedupe_key,
       sender_id = excluded.sender_id,
       content_hash = excluded.content_hash,
       contact_phone = excluded.contact_phone,
@@ -78,6 +81,54 @@ export function createPostsRepository(dbPath = 'data.db') {
     ORDER BY date ASC
   `);
   const deleteExpiredStmt = db.prepare('DELETE FROM posts WHERE date < @cutoff_date');
+  const listPostsForDedupeStmt = db.prepare(`
+    SELECT
+      id,
+      source,
+      msg_id,
+      date,
+      title,
+      photo_path,
+      sender_id,
+      content_hash,
+      dedupe_key,
+      contact_phone,
+      contact_username
+    FROM posts
+    ORDER BY date DESC, id DESC
+  `);
+  const findMissingDedupeKeyStmt = db.prepare(`
+    SELECT
+      id,
+      COALESCE(description, title, '') AS text
+    FROM posts
+    WHERE dedupe_key IS NULL
+       OR TRIM(dedupe_key) = ''
+    ORDER BY id ASC
+  `);
+  const updateDedupeKeyStmt = db.prepare(`
+    UPDATE posts
+    SET dedupe_key = @dedupe_key
+    WHERE id = @id
+  `);
+  const findBySourceAndMsgIdStmt = db.prepare(`
+    SELECT
+      id,
+      source,
+      msg_id,
+      date,
+      title,
+      photo_path,
+      sender_id,
+      content_hash,
+      dedupe_key,
+      contact_phone,
+      contact_username
+    FROM posts
+    WHERE source = @source
+      AND msg_id = @msg_id
+    LIMIT 1
+  `);
   const findDuplicateWithSenderStmt = db.prepare(`
     SELECT 1
     FROM posts
@@ -96,6 +147,22 @@ export function createPostsRepository(dbPath = 'data.db') {
       AND msg_id <> @msg_id
     LIMIT 1
   `);
+  const findFuzzyDuplicateWithSenderStmt = db.prepare(`
+    SELECT 1
+    FROM posts
+    WHERE sender_id = @sender_id
+      AND dedupe_key = @dedupe_key
+      AND msg_id <> @msg_id
+    LIMIT 1
+  `);
+  const findFuzzyDuplicateWithPhoneStmt = db.prepare(`
+    SELECT 1
+    FROM posts
+    WHERE contact_phone = @contact_phone
+      AND dedupe_key = @dedupe_key
+      AND msg_id <> @msg_id
+    LIMIT 1
+  `);
 
   return {
     upsert(post) {
@@ -109,6 +176,31 @@ export function createPostsRepository(dbPath = 'data.db') {
     },
     deleteExpiredBefore(cutoffDate) {
       return deleteExpiredStmt.run({ cutoff_date: cutoffDate }).changes;
+    },
+    listPostsForDedupe() {
+      return listPostsForDedupeStmt.all();
+    },
+    getPostsMissingDedupeKey() {
+      return findMissingDedupeKeyStmt.all();
+    },
+    updateDedupeKey({ id, dedupeKey }) {
+      return updateDedupeKeyStmt.run({
+        id,
+        dedupe_key: dedupeKey,
+      }).changes;
+    },
+    getPostBySourceAndMsgId({ source, msgId }) {
+      return findBySourceAndMsgIdStmt.get({
+        source,
+        msg_id: msgId,
+      }) || null;
+    },
+    deletePostsByIds(ids) {
+      if (!Array.isArray(ids) || ids.length === 0) return 0;
+
+      const placeholders = ids.map(() => '?').join(', ');
+      const stmt = db.prepare(`DELETE FROM posts WHERE id IN (${placeholders})`);
+      return stmt.run(...ids).changes;
     },
     hasDuplicateByContent({ source, msgId, senderId, contentHash }) {
       if (!source || !contentHash) return false;
@@ -127,6 +219,27 @@ export function createPostsRepository(dbPath = 'data.db') {
         content_hash: contentHash,
         msg_id: msgId,
       }));
+    },
+    hasFuzzyDuplicate({ msgId, senderId, contactPhone, dedupeKey }) {
+      if (!dedupeKey) return false;
+
+      if (senderId) {
+        return Boolean(findFuzzyDuplicateWithSenderStmt.get({
+          sender_id: senderId,
+          dedupe_key: dedupeKey,
+          msg_id: msgId,
+        }));
+      }
+
+      if (contactPhone) {
+        return Boolean(findFuzzyDuplicateWithPhoneStmt.get({
+          contact_phone: contactPhone,
+          dedupe_key: dedupeKey,
+          msg_id: msgId,
+        }));
+      }
+
+      return false;
     },
     close() {
       db.close();
@@ -147,6 +260,7 @@ function ensureSchema(db) {
   addColumnIfMissing('title', 'TEXT');
   addColumnIfMissing('description', 'TEXT');
   addColumnIfMissing('price_value', 'INTEGER');
+  addColumnIfMissing('dedupe_key', 'TEXT');
   addColumnIfMissing('sender_id', 'TEXT');
   addColumnIfMissing('content_hash', 'TEXT');
   addColumnIfMissing('contact_phone', 'TEXT');

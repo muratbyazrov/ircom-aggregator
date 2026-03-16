@@ -6,11 +6,12 @@ import { loadConfig } from './config.js';
 import { createPostsRepository } from './db/postsRepository.js';
 import { createIrcomApiClient } from './api/ircomClient.js';
 import { createMediaUploader } from './api/mediaUploader.js';
-import { looksLikeAd, extractStructuredData, buildContentHash } from './parsing/adParser.js';
+import { looksLikeAd, extractStructuredData, buildContentHash, buildDuplicateFingerprint } from './parsing/adParser.js';
 import { createPhotoStorage } from './media/photoStorage.js';
 import { buildAuthParams, logAuthError } from './telegram/auth.js';
 
 const MAX_PHOTOS_PER_LISTING = 8;
+const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
 
 function buildPermalink(entity, msgId) {
   const username = entity?.username;
@@ -56,6 +57,160 @@ function cleanupLocalPhotos(photoPaths) {
       // Ignore cleanup errors for local photos.
     }
   }
+}
+
+function splitMultiValueField(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildTitleFingerprint(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[@#][\p{L}\p{N}_]+/gu, ' ')
+    .replace(PHONE_LIKE_RE, ' ')
+    .replace(/\b(?:19|20)\d{2}\b/gu, ' ')
+    .replace(/\b\d{2,4}\s*(?:gb|гб|tb|тб)\b/gu, ' ')
+    .replace(/\b(?:цена|стоимость)\s*\d[\d.,\s]{0,24}\b/gu, ' ')
+    .replace(/\b\d{2,}\b/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return null;
+  const tokens = normalized.split(' ').filter((token) => token.length > 1);
+  if (tokens.length < 3) return null;
+  return tokens.slice(0, 8).join(' ');
+}
+
+function buildDuplicateIdentityKeys(post) {
+  const keys = new Set();
+  const contentHash = String(post?.content_hash || post?.contentHash || '').trim();
+  const dedupeKey = String(post?.dedupe_key || post?.dedupeKey || '').trim();
+  const senderId = normalizeSenderId(post?.sender_id || post?.senderId);
+  const titleFingerprint = buildTitleFingerprint(post?.title);
+
+  if (contentHash) {
+    keys.add(`content:${contentHash}`);
+  }
+  if (dedupeKey && senderId) {
+    keys.add(`sender:${senderId}:${dedupeKey}`);
+  }
+  if (titleFingerprint && senderId) {
+    keys.add(`sender-title:${senderId}:${titleFingerprint}`);
+  }
+  if (dedupeKey) {
+    for (const phone of splitMultiValueField(post?.contact_phone || post?.contactPhone)) {
+      keys.add(`phone:${phone}:${dedupeKey}`);
+    }
+    for (const username of splitMultiValueField(post?.contact_username || post?.contactUsername)) {
+      keys.add(`username:${username.toLowerCase()}:${dedupeKey}`);
+    }
+  }
+  if (titleFingerprint) {
+    for (const phone of splitMultiValueField(post?.contact_phone || post?.contactPhone)) {
+      keys.add(`phone-title:${phone}:${titleFingerprint}`);
+    }
+    for (const username of splitMultiValueField(post?.contact_username || post?.contactUsername)) {
+      keys.add(`username-title:${username.toLowerCase()}:${titleFingerprint}`);
+    }
+  }
+
+  return [...keys];
+}
+
+function getComparableMessageId(post) {
+  const value = Number(post?.msg_id ?? post?.msgId ?? 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function comparePostsByRecency(left, right) {
+  const leftTime = new Date(left?.date || 0).getTime();
+  const rightTime = new Date(right?.date || 0).getTime();
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  const leftMsgId = getComparableMessageId(left);
+  const rightMsgId = getComparableMessageId(right);
+  if (leftMsgId !== rightMsgId) {
+    return leftMsgId - rightMsgId;
+  }
+
+  const leftId = Number(left?.id || 0);
+  const rightId = Number(right?.id || 0);
+  return leftId - rightId;
+}
+
+function createDuplicateIndex(posts) {
+  const postsById = new Map();
+  const keyToPostIds = new Map();
+
+  const addPost = (post) => {
+    if (!post?.id) return;
+    postsById.set(post.id, post);
+    for (const key of buildDuplicateIdentityKeys(post)) {
+      if (!keyToPostIds.has(key)) keyToPostIds.set(key, new Set());
+      keyToPostIds.get(key).add(post.id);
+    }
+  };
+
+  const removePost = (post) => {
+    if (!post?.id) return;
+    postsById.delete(post.id);
+    for (const key of buildDuplicateIdentityKeys(post)) {
+      const ids = keyToPostIds.get(key);
+      if (!ids) continue;
+      ids.delete(post.id);
+      if (ids.size === 0) {
+        keyToPostIds.delete(key);
+      }
+    }
+  };
+
+  const findMatches = (post) => {
+    const matches = new Map();
+    for (const key of buildDuplicateIdentityKeys(post)) {
+      const ids = keyToPostIds.get(key);
+      if (!ids) continue;
+      for (const id of ids) {
+        const existingPost = postsById.get(id);
+        if (existingPost) {
+          matches.set(id, existingPost);
+        }
+      }
+    }
+    return [...matches.values()];
+  };
+
+  for (const post of posts) {
+    addPost(post);
+  }
+
+  return {
+    addPost,
+    removePost,
+    findMatches,
+  };
+}
+
+function findStaleDuplicatePosts(posts) {
+  const duplicateIndex = createDuplicateIndex([]);
+  const stalePosts = [];
+  const sortedPosts = [...posts].sort((left, right) => comparePostsByRecency(right, left));
+
+  for (const post of sortedPosts) {
+    if (duplicateIndex.findMatches(post).length > 0) {
+      stalePosts.push(post);
+      continue;
+    }
+    duplicateIndex.addPost(post);
+  }
+
+  return stalePosts;
 }
 
 function buildMessageUnits(messages) {
@@ -120,6 +275,28 @@ export async function runApp() {
       console.log(`\nDB cleanup enabled: removed ${deletedRows} rows from posts`);
     }
 
+    const postsMissingDedupeKey = db.getPostsMissingDedupeKey();
+    if (postsMissingDedupeKey.length > 0) {
+      let backfilledDedupeKeys = 0;
+      for (const post of postsMissingDedupeKey) {
+        const dedupeKey = buildDuplicateFingerprint(post.text);
+        if (!dedupeKey) continue;
+        backfilledDedupeKeys += db.updateDedupeKey({ id: post.id, dedupeKey });
+      }
+      if (backfilledDedupeKeys > 0) {
+        console.log(`\nBackfilled dedupe keys for ${backfilledDedupeKeys} posts`);
+      }
+    }
+
+    const staleDuplicatePosts = findStaleDuplicatePosts(db.listPostsForDedupe());
+    if (staleDuplicatePosts.length > 0) {
+      cleanupLocalPhotos(staleDuplicatePosts.map((post) => post.photo_path));
+      const deletedDuplicates = db.deletePostsByIds(staleDuplicatePosts.map((post) => post.id));
+      console.log(`\nDeduped existing DB: removed ${deletedDuplicates} stale duplicate posts`);
+    }
+
+    const duplicateIndex = createDuplicateIndex(db.listPostsForDedupe());
+
     const retentionCutoffIso = buildRetentionCutoffIso(config.retentionDays);
     if (retentionCutoffIso) {
       const expiredPosts = db.getExpiredBefore(retentionCutoffIso);
@@ -127,6 +304,11 @@ export async function runApp() {
         cleanupLocalPhotos(expiredPosts.map((post) => post.photo_path));
       }
       const deletedExpiredPosts = db.deleteExpiredBefore(retentionCutoffIso);
+      if (deletedExpiredPosts > 0) {
+        for (const expiredPost of expiredPosts) {
+          duplicateIndex.removePost(expiredPost);
+        }
+      }
 
       if (config.postApiEnabled) {
         try {
@@ -210,7 +392,21 @@ export async function runApp() {
         const senderId = normalizeSenderId(
           primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
         );
+        const structured = extractStructuredData(text);
+        const postDateIso = primaryMessage.date?.toISOString?.() || new Date().toISOString();
         const contentHash = buildContentHash(text);
+        const dedupeKey = buildDuplicateFingerprint(text);
+        const incomingPost = {
+          source,
+          msg_id: primaryMessage.id,
+          date: postDateIso,
+          title: structured.title,
+          sender_id: senderId,
+          content_hash: contentHash,
+          dedupe_key: dedupeKey,
+          contact_phone: structured.contactPhone,
+          contact_username: structured.contactUsername,
+        };
         if (db.hasDuplicateByContent({
           source,
           msgId: primaryMessage.id,
@@ -220,8 +416,34 @@ export async function runApp() {
           skippedAsDuplicate++;
           continue;
         }
+        if (db.hasFuzzyDuplicate({
+          msgId: primaryMessage.id,
+          senderId,
+          contactPhone: structured.contactPhone,
+          dedupeKey,
+        })) {
+          skippedAsDuplicate++;
+          continue;
+        }
 
-        const structured = extractStructuredData(text);
+        const matchedDuplicates = duplicateIndex.findMatches(incomingPost);
+        if (matchedDuplicates.length > 0) {
+          const latestExistingDuplicate = matchedDuplicates
+            .sort(comparePostsByRecency)
+            .at(-1);
+
+          if (latestExistingDuplicate && comparePostsByRecency(latestExistingDuplicate, incomingPost) >= 0) {
+            skippedAsDuplicate++;
+            continue;
+          }
+
+          cleanupLocalPhotos(matchedDuplicates.map((post) => post.photo_path));
+          db.deletePostsByIds(matchedDuplicates.map((post) => post.id));
+          for (const duplicatePost of matchedDuplicates) {
+            duplicateIndex.removePost(duplicatePost);
+          }
+        }
+
         const photoPaths = [];
         const mediaMessages = unitMessages.filter(hasVisualMedia);
         for (const mediaMessage of mediaMessages) {
@@ -239,11 +461,12 @@ export async function runApp() {
         db.upsert({
           source,
           msg_id: primaryMessage.id,
-          date: primaryMessage.date?.toISOString?.() || new Date().toISOString(),
+          date: postDateIso,
           permalink: buildPermalink(entity, primaryMessage.id),
           title: structured.title,
           description: structured.description,
           price_value: structured.priceValue,
+          dedupe_key: dedupeKey,
           sender_id: senderId,
           content_hash: contentHash,
           contact_phone: structured.contactPhone,
@@ -252,6 +475,10 @@ export async function runApp() {
           category: structured.category,
           photo_path: photoPaths[0] || null,
         });
+        const savedPost = db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id });
+        if (savedPost) {
+          duplicateIndex.addPost(savedPost);
+        }
 
         const uploadedPhotos = [];
         if (config.postApiEnabled && photoPaths.length > 0) {
@@ -281,7 +508,7 @@ export async function runApp() {
             importMeta: {
               source,
               msgId: primaryMessage.id,
-              date: primaryMessage.date?.toISOString?.() || new Date().toISOString(),
+              date: postDateIso,
               permalink: buildPermalink(entity, primaryMessage.id),
               contentHash,
               photoObjectKeys: uploadedPhotos

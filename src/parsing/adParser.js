@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 const MAX_TITLE_LENGTH = 60;
-const PHONE_LIKE_RE = /(?:\+?\d[\d()\- ]{8,}\d)/g;
+const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
 
 const CATEGORY_RULES = [
   { name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'ваз', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin', 'л/с', 'мотор', 'привод', 'механика', 'бампер'] },
@@ -63,6 +63,28 @@ export function buildContentHash(text) {
     .toLowerCase()
     .replace(/https?:\/\/\S+/g, ' ')
     .replace(/[@#][\p{L}\p{N}_]+/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!canonical) return null;
+  return createHash('sha1').update(canonical, 'utf8').digest('hex');
+}
+
+export function buildDuplicateFingerprint(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) return null;
+
+  const canonical = normalized
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[@#][\p{L}\p{N}_]+/gu, ' ')
+    .replace(PHONE_LIKE_RE, ' ')
+    .replace(/(?<![\p{L}\p{N}_])(?:цена|стоимость)\s*\d[\d.,\s]{0,24}(?![\p{L}\p{N}_])/gu, ' ')
+    .replace(/(?<![\p{L}\p{N}_])\d{1,3}(?:[.,]\d{1,3})?\s*(?:т|тыс|k|к|млн|мл|m)(?![\p{L}\p{N}_])/gu, ' ')
+    .replace(/(?<![\p{L}\p{N}_])\d{1,3}(?:[ .,\t]\d{3})+(?![\p{L}\p{N}_])/gu, ' ')
+    .replace(/(?<![\p{L}\p{N}_])\d{5,}(?![\p{L}\p{N}_])/gu, ' ')
+    .replace(/(?<![\p{L}\p{N}_])торг(?![\p{L}\p{N}_])/gu, ' ')
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -270,7 +292,7 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
       if (bareValue >= 20 && bareValue <= 900) {
         // В локальных объявлениях "цена 48" обычно значит 48 000.
         result.push({ value: bareValue * 1000, weight: 2 });
-      } else if (bareValue >= 1000 && bareValue <= 1000000) {
+      } else if (bareValue >= 1000 && bareValue <= 10000000) {
         result.push({ value: bareValue, weight: 1 });
       }
       continue;
@@ -312,7 +334,7 @@ function parseNumericPrice(rawNumber, rawSuffix) {
 }
 
 function stripPhoneLikeNumbers(text) {
-  return String(text || '').replace(PHONE_LIKE_RE, ' ');
+  return String(text || '').replace(PHONE_LIKE_RE, (match) => (normalizePhone(match) ? ' ' : match));
 }
 
 function extractContacts(text) {
@@ -348,6 +370,7 @@ function extractContacts(text) {
 
 function normalizePhone(value) {
   const raw = String(value || '').trim();
+  if (!raw || hasInvalidPhoneGrouping(raw)) return null;
   const hasLeadingPlus = raw.startsWith('+');
   const digits = raw.replace(/[^\d]/g, '');
   if (!digits) return null;
@@ -368,6 +391,16 @@ function normalizePhone(value) {
     return `+${digits}`;
   }
   return null;
+}
+
+function hasInvalidPhoneGrouping(value) {
+  const groups = String(value || '')
+    .trim()
+    .replace(/^\+/, '')
+    .split(/[\s()\-]+/)
+    .filter(Boolean);
+
+  return groups.length > 1 && groups.some((group) => /\d/.test(group) && group.length > 4);
 }
 
 function stripPhoneLikeChunks(text) {
