@@ -5,8 +5,15 @@ function parseErrorMessage(payload) {
   if (!payload) return 'Request failed';
   if (typeof payload === 'string') return payload;
   if (payload?.error?.message) return payload.error.message;
+  if (payload?.error?.msg) return payload.error.msg;
+  if (typeof payload?.error === 'string') return payload.error;
   if (payload?.message) return payload.message;
-  return 'Request failed';
+  if (payload?.msg) return payload.msg;
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return 'Request failed';
+  }
 }
 
 function normalizePhotoReference(value, publicBaseUrl) {
@@ -64,14 +71,16 @@ export function createMediaUploader(config) {
       });
 
       let payload = null;
+      let rawBody = '';
       try {
-        payload = await response.json();
+        rawBody = await response.text();
+        payload = rawBody ? JSON.parse(rawBody) : null;
       } catch {
         payload = null;
       }
 
       if (!response.ok) {
-        throw new Error(parseErrorMessage(payload) || `HTTP ${response.status}`);
+        throw new Error(parseErrorMessage(payload || rawBody) || `HTTP ${response.status}`);
       }
       if (payload?.error) {
         throw new Error(parseErrorMessage(payload));
