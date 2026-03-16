@@ -50,7 +50,8 @@ npm start
 - `contact_username`: comma-separated Telegram usernames
 - `contact_text`: normalized contacts summary (e.g. `phone:+7999...; tg:@name`)
 - `category`: rule-based category (e.g. `Авто`, `Недвижимость`, `Электроника`)
-- `photo_path`: local photo path when available
+- `photo_path`: first local photo path when available
+- `photo_paths`: JSON array with all local photo paths when available
 
 When `TG_POST_API_ENABLED=true`, the aggregator also sends backend import metadata:
 `source`, `msgId`, `date`, `permalink`, `contentHash`, `photoObjectKeys`.

@@ -59,6 +59,35 @@ function cleanupLocalPhotos(photoPaths) {
   }
 }
 
+function parseStoredPhotoPaths(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+
+  const normalizedValue = String(value || '').trim();
+  if (!normalizedValue) return [];
+
+  try {
+    const parsed = JSON.parse(normalizedValue);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+  } catch {
+    // Fall back to legacy single-path storage.
+  }
+
+  return [normalizedValue];
+}
+
+function getPostPhotoPaths(post) {
+  const multiValue = post?.photo_paths ?? post?.photoPaths;
+  const parsedMultiValue = parseStoredPhotoPaths(multiValue);
+  if (parsedMultiValue.length > 0) {
+    return parsedMultiValue;
+  }
+  return parseStoredPhotoPaths(post?.photo_path || post?.photoPath);
+}
+
 function splitMultiValueField(value) {
   return String(value || '')
     .split(',')
@@ -101,9 +130,9 @@ async function syncPostToBackend({ post, config, db, postApi, mediaUploader }) {
 
   const payload = buildListingPayload(post, config);
   const uploadedPhotos = [];
-  const photoPath = String(post?.photo_path || post?.photoPath || '').trim();
+  const photoPaths = getPostPhotoPaths(post).slice(0, MAX_PHOTOS_PER_LISTING);
 
-  if (photoPath) {
+  for (const photoPath of photoPaths) {
     try {
       const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath);
       if (uploadedPhoto?.photoUrl) {
@@ -353,7 +382,7 @@ export async function runApp() {
 
     const staleDuplicatePosts = findStaleDuplicatePosts(db.listPostsForDedupe());
     if (staleDuplicatePosts.length > 0) {
-      cleanupLocalPhotos(staleDuplicatePosts.map((post) => post.photo_path));
+          cleanupLocalPhotos(staleDuplicatePosts.flatMap((post) => getPostPhotoPaths(post)));
       const deletedDuplicates = db.deletePostsByIds(staleDuplicatePosts.map((post) => post.id));
       console.log(`\nDeduped existing DB: removed ${deletedDuplicates} stale duplicate posts`);
     }
@@ -393,7 +422,7 @@ export async function runApp() {
     if (retentionCutoffIso) {
       const expiredPosts = db.getExpiredBefore(retentionCutoffIso);
       if (expiredPosts.length > 0) {
-        cleanupLocalPhotos(expiredPosts.map((post) => post.photo_path));
+        cleanupLocalPhotos(expiredPosts.flatMap((post) => getPostPhotoPaths(post)));
       }
       const deletedExpiredPosts = db.deleteExpiredBefore(retentionCutoffIso);
       if (deletedExpiredPosts > 0) {
@@ -485,15 +514,9 @@ export async function runApp() {
           primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
         );
         const structured = extractStructuredData(text);
-        const hasListingContacts = Boolean(structured.contactPhone || structured.contactUsername);
         const postDateIso = primaryMessage.date?.toISOString?.() || new Date().toISOString();
         const contentHash = buildContentHash(text);
         const dedupeKey = buildDuplicateFingerprint(text);
-
-        if (!hasListingContacts) {
-          skippedByFilter++;
-          continue;
-        }
 
         const incomingPost = {
           source,
@@ -536,7 +559,7 @@ export async function runApp() {
             continue;
           }
 
-          cleanupLocalPhotos(matchedDuplicates.map((post) => post.photo_path));
+          cleanupLocalPhotos(matchedDuplicates.flatMap((post) => getPostPhotoPaths(post)));
           db.deletePostsByIds(matchedDuplicates.map((post) => post.id));
           for (const duplicatePost of matchedDuplicates) {
             duplicateIndex.removePost(duplicatePost);
@@ -573,6 +596,7 @@ export async function runApp() {
           contact_text: structured.contactText,
           category: structured.category,
           photo_path: photoPaths[0] || null,
+          photo_paths: photoPaths.length > 0 ? JSON.stringify(photoPaths) : null,
         });
         const savedPost = db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id });
         if (savedPost) {

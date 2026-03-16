@@ -33,7 +33,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       contact_username,
       contact_text,
       category,
-      photo_path
+      photo_path,
+      photo_paths
     )
     VALUES (
       @source,
@@ -50,7 +51,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       @contact_username,
       @contact_text,
       @category,
-      @photo_path
+      @photo_path,
+      @photo_paths
     )
     ON CONFLICT(source, msg_id) DO UPDATE SET
       date = excluded.date,
@@ -66,6 +68,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       contact_text = excluded.contact_text,
       category = excluded.category,
       photo_path = COALESCE(excluded.photo_path, posts.photo_path),
+      photo_paths = COALESCE(excluded.photo_paths, posts.photo_paths),
       backend_synced_at = CASE
         WHEN posts.date IS DISTINCT FROM excluded.date
           OR posts.permalink IS DISTINCT FROM excluded.permalink
@@ -80,6 +83,7 @@ export function createPostsRepository(dbPath = 'data.db') {
           OR posts.contact_text IS DISTINCT FROM excluded.contact_text
           OR posts.category IS DISTINCT FROM excluded.category
           OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
+          OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
         THEN NULL
         ELSE posts.backend_synced_at
       END,
@@ -97,6 +101,7 @@ export function createPostsRepository(dbPath = 'data.db') {
           OR posts.contact_text IS DISTINCT FROM excluded.contact_text
           OR posts.category IS DISTINCT FROM excluded.category
           OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
+          OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
         THEN NULL
         ELSE posts.backend_last_error
       END
@@ -110,7 +115,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       source,
       msg_id,
       date,
-      photo_path
+      photo_path,
+      photo_paths
     FROM posts
     WHERE date < @cutoff_date
     ORDER BY date ASC
@@ -124,6 +130,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       date,
       title,
       photo_path,
+      photo_paths,
       sender_id,
       content_hash,
       dedupe_key,
@@ -154,6 +161,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       date,
       title,
       photo_path,
+      photo_paths,
       sender_id,
       content_hash,
       dedupe_key,
@@ -166,7 +174,8 @@ export function createPostsRepository(dbPath = 'data.db') {
       permalink,
       backend_synced_at,
       backend_last_error,
-      photo_path
+      photo_path,
+      photo_paths
     FROM posts
     WHERE source = @source
       AND msg_id = @msg_id
@@ -183,6 +192,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       description,
       price_value,
       photo_path,
+      photo_paths,
       sender_id,
       content_hash,
       dedupe_key,
@@ -364,6 +374,7 @@ function ensureSchema(db) {
   addColumnIfMissing('contact_text', 'TEXT');
   addColumnIfMissing('category', 'TEXT');
   addColumnIfMissing('photo_path', 'TEXT');
+  addColumnIfMissing('photo_paths', 'TEXT');
   addColumnIfMissing('backend_synced_at', 'TEXT');
   addColumnIfMissing('backend_last_error', 'TEXT');
 }
