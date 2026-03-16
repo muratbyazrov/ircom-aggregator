@@ -72,6 +72,63 @@ function getFirstMultiValue(value, { prefix = '' } = {}) {
   return prefix && !firstValue.startsWith(prefix) ? `${prefix}${firstValue}` : firstValue;
 }
 
+function buildListingPayload(post, config) {
+  const listingPhone = getFirstMultiValue(post?.contact_phone || post?.contactPhone);
+  const listingTelegram = getFirstMultiValue(post?.contact_username || post?.contactUsername, { prefix: '@' });
+
+  return {
+    accountId: config.postApiAccountId,
+    kind: config.postApiKind,
+    category: String(post?.category || '').trim() || config.postApiDefaultCategory || 'Другое',
+    title: String(post?.title || '').trim() || 'Объявление',
+    description: String(post?.description || '').trim(),
+    price: Number(post?.price_value || post?.priceValue) || config.postApiDefaultPrice || 1,
+    ...(listingPhone ? { phone: listingPhone } : {}),
+    ...(listingTelegram ? { telegram: listingTelegram } : {}),
+    importMeta: {
+      source: post?.source,
+      msgId: post?.msg_id ?? post?.msgId,
+      date: post?.date,
+      permalink: post?.permalink || null,
+      contentHash: post?.content_hash || post?.contentHash || null,
+      photoObjectKeys: [],
+    },
+  };
+}
+
+async function syncPostToBackend({ post, config, db, postApi, mediaUploader }) {
+  if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
+
+  const payload = buildListingPayload(post, config);
+  const uploadedPhotos = [];
+  const photoPath = String(post?.photo_path || post?.photoPath || '').trim();
+
+  if (photoPath) {
+    try {
+      const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath);
+      if (uploadedPhoto?.photoUrl) {
+        uploadedPhotos.push(uploadedPhoto);
+      }
+    } catch (err) {
+      console.error(`Photo upload failed for ${post.source}/${post.msg_id}: ${err?.message || err}`);
+    }
+  }
+
+  payload.photos = uploadedPhotos.map((photo) => photo.photoUrl);
+  payload.importMeta.photoObjectKeys = uploadedPhotos
+    .map((photo) => String(photo?.objectKey || '').trim())
+    .filter(Boolean);
+
+  try {
+    await postApi.createListing(payload);
+    db.markBackendSyncSuccess({ id: post.id });
+    return { skipped: false, synced: true, uploadedPhotosCount: uploadedPhotos.length };
+  } catch (err) {
+    db.markBackendSyncFailure({ id: post.id, error: err?.message || err });
+    throw err;
+  }
+}
+
 function buildTitleFingerprint(value) {
   const normalized = String(value || '')
     .toLowerCase()
@@ -303,6 +360,35 @@ export async function runApp() {
 
     const duplicateIndex = createDuplicateIndex(db.listPostsForDedupe());
 
+    if (config.postApiEnabled) {
+      const pendingBackendPosts = db.listPendingBackendSync();
+      if (pendingBackendPosts.length > 0) {
+        let syncedPendingPosts = 0;
+        let failedPendingPosts = 0;
+
+        for (const pendingPost of pendingBackendPosts) {
+          try {
+            await syncPostToBackend({
+              post: pendingPost,
+              config,
+              db,
+              postApi,
+              mediaUploader,
+            });
+            syncedPendingPosts++;
+          } catch (err) {
+            failedPendingPosts++;
+            console.error(`Retry sync failed for ${pendingPost.source}/${pendingPost.msg_id}: ${err?.message || err}`);
+          }
+        }
+
+        console.log(
+          `\nPending backend sync: ${syncedPendingPosts} sent`
+            + (failedPendingPosts > 0 ? `, ${failedPendingPosts} still pending` : '')
+        );
+      }
+    }
+
     const retentionCutoffIso = buildRetentionCutoffIso(config.retentionDays);
     if (retentionCutoffIso) {
       const expiredPosts = db.getExpiredBefore(retentionCutoffIso);
@@ -493,56 +579,29 @@ export async function runApp() {
           duplicateIndex.addPost(savedPost);
         }
 
-        const uploadedPhotos = [];
-        if (config.postApiEnabled && photoPaths.length > 0) {
-          for (const photoPath of photoPaths.slice(0, MAX_PHOTOS_PER_LISTING)) {
-            try {
-              const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath);
-              if (uploadedPhoto?.photoUrl) {
-                uploadedPhotos.push(uploadedPhoto);
-                uploadedPhotosToApi++;
-              }
-            } catch (err) {
-              uploadPhotosFailed++;
-              console.error(`Photo upload failed for ${source}/${primaryMessage.id}: ${err?.message || err}`);
-            }
-          }
-        }
-
-        try {
-          const listingPhone = getFirstMultiValue(structured.contactPhone);
-          const listingTelegram = getFirstMultiValue(structured.contactUsername, { prefix: '@' });
-
-          await postApi.createListing({
-            accountId: config.postApiAccountId,
-            kind: config.postApiKind,
-            category: structured.category || config.postApiDefaultCategory || 'Другое',
-            title: structured.title || 'Объявление',
-            description: structured.description || text || '',
-            price: Number(structured.priceValue) || config.postApiDefaultPrice || 1,
-            ...(listingPhone ? { phone: listingPhone } : {}),
-            ...(listingTelegram ? { telegram: listingTelegram } : {}),
-            photos: uploadedPhotos.map((photo) => photo.photoUrl),
-            importMeta: {
-              source,
-              msgId: primaryMessage.id,
-              date: postDateIso,
-              permalink: buildPermalink(entity, primaryMessage.id),
-              contentHash,
-              photoObjectKeys: uploadedPhotos
-                .map((photo) => String(photo?.objectKey || '').trim())
-                .filter(Boolean),
-            },
-          });
-          if (config.postApiEnabled) {
+        if (config.postApiEnabled && savedPost) {
+          try {
+            const syncResult = await syncPostToBackend({
+              post: savedPost,
+              config,
+              db,
+              postApi,
+              mediaUploader,
+            });
             postedToApi++;
+            uploadedPhotosToApi += Number(syncResult?.uploadedPhotosCount || 0);
+          } catch (err) {
+            postApiFailed++;
+            if (String(err?.message || err).includes('Photo upload failed')) {
+              uploadPhotosFailed++;
+            }
+            console.error(`Post API failed for ${source}/${primaryMessage.id}: ${err?.message || err}`);
           }
-        } catch (err) {
-          postApiFailed++;
-          console.error(`Post API failed for ${source}/${primaryMessage.id}: ${err?.message || err}`);
         }
 
-        if (config.postApiEnabled && !config.savePhotos && photoPaths.length > 0) {
+        const refreshedSavedPost = db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id });
+        const isBackendSynced = Boolean(refreshedSavedPost?.backend_synced_at || refreshedSavedPost?.backendSyncedAt);
+        if (config.postApiEnabled && !config.savePhotos && photoPaths.length > 0 && isBackendSynced) {
           cleanupLocalPhotos(photoPaths);
         }
 

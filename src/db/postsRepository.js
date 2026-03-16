@@ -65,11 +65,46 @@ export function createPostsRepository(dbPath = 'data.db') {
       contact_username = excluded.contact_username,
       contact_text = excluded.contact_text,
       category = excluded.category,
-      photo_path = COALESCE(excluded.photo_path, posts.photo_path)
+      photo_path = COALESCE(excluded.photo_path, posts.photo_path),
+      backend_synced_at = CASE
+        WHEN posts.date IS DISTINCT FROM excluded.date
+          OR posts.permalink IS DISTINCT FROM excluded.permalink
+          OR posts.title IS DISTINCT FROM excluded.title
+          OR posts.description IS DISTINCT FROM excluded.description
+          OR posts.price_value IS DISTINCT FROM excluded.price_value
+          OR posts.dedupe_key IS DISTINCT FROM excluded.dedupe_key
+          OR posts.sender_id IS DISTINCT FROM excluded.sender_id
+          OR posts.content_hash IS DISTINCT FROM excluded.content_hash
+          OR posts.contact_phone IS DISTINCT FROM excluded.contact_phone
+          OR posts.contact_username IS DISTINCT FROM excluded.contact_username
+          OR posts.contact_text IS DISTINCT FROM excluded.contact_text
+          OR posts.category IS DISTINCT FROM excluded.category
+          OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
+        THEN NULL
+        ELSE posts.backend_synced_at
+      END,
+      backend_last_error = CASE
+        WHEN posts.date IS DISTINCT FROM excluded.date
+          OR posts.permalink IS DISTINCT FROM excluded.permalink
+          OR posts.title IS DISTINCT FROM excluded.title
+          OR posts.description IS DISTINCT FROM excluded.description
+          OR posts.price_value IS DISTINCT FROM excluded.price_value
+          OR posts.dedupe_key IS DISTINCT FROM excluded.dedupe_key
+          OR posts.sender_id IS DISTINCT FROM excluded.sender_id
+          OR posts.content_hash IS DISTINCT FROM excluded.content_hash
+          OR posts.contact_phone IS DISTINCT FROM excluded.contact_phone
+          OR posts.contact_username IS DISTINCT FROM excluded.contact_username
+          OR posts.contact_text IS DISTINCT FROM excluded.contact_text
+          OR posts.category IS DISTINCT FROM excluded.category
+          OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
+        THEN NULL
+        ELSE posts.backend_last_error
+      END
   `);
 
   // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const clearStmt = db.prepare('DELETE FROM posts');
+  const clearSyncedStmt = db.prepare('DELETE FROM posts WHERE backend_synced_at IS NOT NULL');
   const findExpiredStmt = db.prepare(`
     SELECT
       source,
@@ -123,11 +158,57 @@ export function createPostsRepository(dbPath = 'data.db') {
       content_hash,
       dedupe_key,
       contact_phone,
-      contact_username
+      contact_username,
+      contact_text,
+      category,
+      description,
+      price_value,
+      permalink,
+      backend_synced_at,
+      backend_last_error,
+      photo_path
     FROM posts
     WHERE source = @source
       AND msg_id = @msg_id
     LIMIT 1
+  `);
+  const listPendingBackendSyncStmt = db.prepare(`
+    SELECT
+      id,
+      source,
+      msg_id,
+      date,
+      permalink,
+      title,
+      description,
+      price_value,
+      photo_path,
+      sender_id,
+      content_hash,
+      dedupe_key,
+      contact_phone,
+      contact_username,
+      contact_text,
+      category,
+      backend_synced_at,
+      backend_last_error
+    FROM posts
+    WHERE backend_synced_at IS NULL
+    ORDER BY date ASC, id ASC
+  `);
+  const markBackendSyncSuccessStmt = db.prepare(`
+    UPDATE posts
+    SET
+      backend_synced_at = @backend_synced_at,
+      backend_last_error = NULL
+    WHERE id = @id
+  `);
+  const markBackendSyncFailureStmt = db.prepare(`
+    UPDATE posts
+    SET
+      backend_synced_at = NULL,
+      backend_last_error = @backend_last_error
+    WHERE id = @id
   `);
   const findDuplicateWithSenderStmt = db.prepare(`
     SELECT 1
@@ -168,8 +249,8 @@ export function createPostsRepository(dbPath = 'data.db') {
     upsert(post) {
       upsertStmt.run(post);
     },
-    clear() {
-      return clearStmt.run().changes;
+    clear({ syncedOnly = false } = {}) {
+      return syncedOnly ? clearSyncedStmt.run().changes : clearStmt.run().changes;
     },
     getExpiredBefore(cutoffDate) {
       return findExpiredStmt.all({ cutoff_date: cutoffDate });
@@ -194,6 +275,21 @@ export function createPostsRepository(dbPath = 'data.db') {
         source,
         msg_id: msgId,
       }) || null;
+    },
+    listPendingBackendSync() {
+      return listPendingBackendSyncStmt.all();
+    },
+    markBackendSyncSuccess({ id, syncedAt = new Date().toISOString() }) {
+      return markBackendSyncSuccessStmt.run({
+        id,
+        backend_synced_at: syncedAt,
+      }).changes;
+    },
+    markBackendSyncFailure({ id, error }) {
+      return markBackendSyncFailureStmt.run({
+        id,
+        backend_last_error: String(error || '').trim() || 'Unknown sync error',
+      }).changes;
     },
     deletePostsByIds(ids) {
       if (!Array.isArray(ids) || ids.length === 0) return 0;
@@ -268,4 +364,6 @@ function ensureSchema(db) {
   addColumnIfMissing('contact_text', 'TEXT');
   addColumnIfMissing('category', 'TEXT');
   addColumnIfMissing('photo_path', 'TEXT');
+  addColumnIfMissing('backend_synced_at', 'TEXT');
+  addColumnIfMissing('backend_last_error', 'TEXT');
 }
