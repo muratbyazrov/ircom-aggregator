@@ -399,9 +399,16 @@ export async function runApp() {
           primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
         );
         const structured = extractStructuredData(text);
+        const hasListingContacts = Boolean(structured.contactPhone || structured.contactUsername);
         const postDateIso = primaryMessage.date?.toISOString?.() || new Date().toISOString();
         const contentHash = buildContentHash(text);
         const dedupeKey = buildDuplicateFingerprint(text);
+
+        if (!hasListingContacts) {
+          skippedByFilter++;
+          continue;
+        }
+
         const incomingPost = {
           source,
           msg_id: primaryMessage.id,
