@@ -104,6 +104,24 @@ export function createPostsRepository(dbPath = 'data.db') {
           OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
         THEN NULL
         ELSE posts.backend_last_error
+      END,
+      backend_sync_target = CASE
+        WHEN posts.date IS DISTINCT FROM excluded.date
+          OR posts.permalink IS DISTINCT FROM excluded.permalink
+          OR posts.title IS DISTINCT FROM excluded.title
+          OR posts.description IS DISTINCT FROM excluded.description
+          OR posts.price_value IS DISTINCT FROM excluded.price_value
+          OR posts.dedupe_key IS DISTINCT FROM excluded.dedupe_key
+          OR posts.sender_id IS DISTINCT FROM excluded.sender_id
+          OR posts.content_hash IS DISTINCT FROM excluded.content_hash
+          OR posts.contact_phone IS DISTINCT FROM excluded.contact_phone
+          OR posts.contact_username IS DISTINCT FROM excluded.contact_username
+          OR posts.contact_text IS DISTINCT FROM excluded.contact_text
+          OR posts.category IS DISTINCT FROM excluded.category
+          OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
+          OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
+        THEN NULL
+        ELSE posts.backend_sync_target
       END
   `);
 
@@ -151,6 +169,13 @@ export function createPostsRepository(dbPath = 'data.db') {
   const updateDedupeKeyStmt = db.prepare(`
     UPDATE posts
     SET dedupe_key = @dedupe_key
+    WHERE id = @id
+  `);
+  const updateStoredPhotosStmt = db.prepare(`
+    UPDATE posts
+    SET
+      photo_path = @photo_path,
+      photo_paths = @photo_paths
     WHERE id = @id
   `);
   const findBySourceAndMsgIdStmt = db.prepare(`
@@ -201,16 +226,19 @@ export function createPostsRepository(dbPath = 'data.db') {
       contact_text,
       category,
       backend_synced_at,
-      backend_last_error
+      backend_last_error,
+      backend_sync_target
     FROM posts
     WHERE backend_synced_at IS NULL
+       OR backend_sync_target IS DISTINCT FROM @backend_sync_target
     ORDER BY date ASC, id ASC
   `);
   const markBackendSyncSuccessStmt = db.prepare(`
     UPDATE posts
     SET
       backend_synced_at = @backend_synced_at,
-      backend_last_error = NULL
+      backend_last_error = NULL,
+      backend_sync_target = @backend_sync_target
     WHERE id = @id
   `);
   const markBackendSyncFailureStmt = db.prepare(`
@@ -280,19 +308,29 @@ export function createPostsRepository(dbPath = 'data.db') {
         dedupe_key: dedupeKey,
       }).changes;
     },
+    updateStoredPhotos({ id, photoPath = null, photoPaths = null }) {
+      return updateStoredPhotosStmt.run({
+        id,
+        photo_path: photoPath,
+        photo_paths: photoPaths,
+      }).changes;
+    },
     getPostBySourceAndMsgId({ source, msgId }) {
       return findBySourceAndMsgIdStmt.get({
         source,
         msg_id: msgId,
       }) || null;
     },
-    listPendingBackendSync() {
-      return listPendingBackendSyncStmt.all();
+    listPendingBackendSync({ backendSyncTarget = null } = {}) {
+      return listPendingBackendSyncStmt.all({
+        backend_sync_target: backendSyncTarget,
+      });
     },
-    markBackendSyncSuccess({ id, syncedAt = new Date().toISOString() }) {
+    markBackendSyncSuccess({ id, syncedAt = new Date().toISOString(), backendSyncTarget = null }) {
       return markBackendSyncSuccessStmt.run({
         id,
         backend_synced_at: syncedAt,
+        backend_sync_target: backendSyncTarget,
       }).changes;
     },
     markBackendSyncFailure({ id, error }) {
@@ -377,4 +415,5 @@ function ensureSchema(db) {
   addColumnIfMissing('photo_paths', 'TEXT');
   addColumnIfMissing('backend_synced_at', 'TEXT');
   addColumnIfMissing('backend_last_error', 'TEXT');
+  addColumnIfMissing('backend_sync_target', 'TEXT');
 }

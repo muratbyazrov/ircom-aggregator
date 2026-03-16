@@ -125,14 +125,34 @@ function buildListingPayload(post, config) {
   };
 }
 
-async function syncPostToBackend({ post, config, db, postApi, mediaUploader }) {
+function buildBackendSyncTarget(config) {
+  const endpoint = String(config?.postApiUrl || '').trim().replace(/\/+$/, '');
+  const accountId = Number(config?.postApiAccountId || 0);
+  const kind = Number(config?.postApiKind || 0);
+  return JSON.stringify({ endpoint, accountId, kind });
+}
+
+async function syncPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget }) {
   if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
 
   const payload = buildListingPayload(post, config);
   const uploadedPhotos = [];
-  const photoPaths = getPostPhotoPaths(post).slice(0, MAX_PHOTOS_PER_LISTING);
+  const originalPhotoPaths = getPostPhotoPaths(post).slice(0, MAX_PHOTOS_PER_LISTING);
+  const existingPhotoPaths = originalPhotoPaths.filter((photoPath) => fs.existsSync(photoPath));
+  const missingPhotoPathsCount = originalPhotoPaths.length - existingPhotoPaths.length;
 
-  for (const photoPath of photoPaths) {
+  if (missingPhotoPathsCount > 0) {
+    db.updateStoredPhotos({
+      id: post.id,
+      photoPath: existingPhotoPaths[0] || null,
+      photoPaths: existingPhotoPaths.length > 0 ? JSON.stringify(existingPhotoPaths) : null,
+    });
+    console.warn(
+      `Skipping ${missingPhotoPathsCount} missing local photo(s) for ${post.source}/${post.msg_id} during backend sync`
+    );
+  }
+
+  for (const photoPath of existingPhotoPaths) {
     try {
       const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath);
       if (uploadedPhoto?.photoUrl) {
@@ -150,7 +170,7 @@ async function syncPostToBackend({ post, config, db, postApi, mediaUploader }) {
 
   try {
     await postApi.createListing(payload);
-    db.markBackendSyncSuccess({ id: post.id });
+    db.markBackendSyncSuccess({ id: post.id, backendSyncTarget });
     return { skipped: false, synced: true, uploadedPhotosCount: uploadedPhotos.length };
   } catch (err) {
     db.markBackendSyncFailure({ id: post.id, error: err?.message || err });
@@ -334,6 +354,7 @@ export async function runApp() {
   const db = createPostsRepository('data.db');
   const postApi = createIrcomApiClient(config);
   const mediaUploader = createMediaUploader(config);
+  const backendSyncTarget = buildBackendSyncTarget(config);
   const photoStorage = createPhotoStorage({
     enabled: config.savePhotos || config.postApiEnabled,
     photosDir: config.photosDir,
@@ -365,6 +386,9 @@ export async function runApp() {
     if (config.clearBeforeRun) {
       const deletedRows = db.clear();
       console.log(`\nDB cleanup enabled: removed ${deletedRows} rows from posts`);
+      if (config.postApiEnabled) {
+        console.log('Backend sync note: clear-before-run resends the latest Telegram posts and can skew backend-to-backend comparisons.');
+      }
     }
 
     const postsMissingDedupeKey = db.getPostsMissingDedupeKey();
@@ -390,7 +414,7 @@ export async function runApp() {
     const duplicateIndex = createDuplicateIndex(db.listPostsForDedupe());
 
     if (config.postApiEnabled) {
-      const pendingBackendPosts = db.listPendingBackendSync();
+      const pendingBackendPosts = db.listPendingBackendSync({ backendSyncTarget });
       if (pendingBackendPosts.length > 0) {
         let syncedPendingPosts = 0;
         let failedPendingPosts = 0;
@@ -403,6 +427,7 @@ export async function runApp() {
               db,
               postApi,
               mediaUploader,
+              backendSyncTarget,
             });
             syncedPendingPosts++;
           } catch (err) {
@@ -611,6 +636,7 @@ export async function runApp() {
               db,
               postApi,
               mediaUploader,
+              backendSyncTarget,
             });
             postedToApi++;
             uploadedPhotosToApi += Number(syncResult?.uploadedPhotosCount || 0);
