@@ -4,14 +4,18 @@ const MAX_TITLE_LENGTH = 60;
 const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
 
 const CATEGORY_RULES = [
-  { name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'ваз', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin', 'л/с', 'мотор', 'привод', 'механика', 'бампер'] },
-  { name: 'Недвижимость', keywords: ['квартир', 'дом', 'комнат', 'аренда', 'сдам', 'сдается', 'недвижим', 'офис', 'посуточно', 'ипотек', 'район', 'раен', 'участок', 'земля'] },
-  { name: 'Электроника', keywords: ['iphone', 'айфон', 'samsung', 'xiaomi', 'телефон', 'смартфон', 'ноутбук', 'macbook', 'пк', 'playstation', 'ps5', 'ipad', 'наушник', 'xbox', 'x box'] },
-  { name: 'Работа', keywords: ['ваканси', 'работ', 'зарплат', 'требуетс', 'график', 'сотрудник', 'резюме'] },
-  { name: 'Для дома', keywords: ['диван', 'кровать', 'шкаф', 'стол', 'мебел', 'холодильник', 'стирал', 'посуда', 'сад'] },
-  { name: 'Для детей', keywords: ['детск', 'коляска', 'игрушк', 'подгуз', 'школ', 'самокат'] },
-  { name: 'Другое', keywords: ['услуг', 'ремонт', 'мастер', 'доставка', 'перевоз', 'маникюр', 'парикмахер', 'сантехник', 'электрик', 'куртка', 'платье', 'кроссовк', 'обув', 'одежд', 'размер', 'брюки', 'футболк', 'кот', 'кошка', 'собак', 'щенок', 'питом', 'ветеринар', 'корм', 'велосипед', 'спорт', 'гантел', 'рыбалк', 'охота', 'музык', 'гитара'] },
+  { code: 'transport', name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'ваз', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin', 'л/с', 'мотор', 'привод', 'механика', 'бампер'] },
+  { code: 'real_estate', name: 'Недвижимость', keywords: ['квартир', 'дом', 'комнат', 'аренда', 'сдам', 'сдается', 'недвижим', 'офис', 'посуточно', 'ипотек', 'район', 'раен', 'участок', 'земля'] },
+  { code: 'electronics', name: 'Электроника', keywords: ['iphone', 'айфон', 'samsung', 'xiaomi', 'телефон', 'смартфон', 'ноутбук', 'macbook', 'пк', 'playstation', 'ps5', 'ipad', 'наушник', 'xbox', 'x box'] },
+  { code: 'jobs', name: 'Работа', keywords: ['ваканси', 'работ', 'зарплат', 'требуетс', 'график', 'сотрудник', 'резюме'] },
+  { code: 'for_home', name: 'Для дома', keywords: ['диван', 'кровать', 'шкаф', 'стол', 'мебел', 'холодильник', 'стирал', 'посуда', 'сад'] },
+  { code: 'children', name: 'Для детей', keywords: ['детск', 'коляска', 'игрушк', 'подгуз', 'школ', 'самокат'] },
+  { code: 'other', name: 'Другое', keywords: ['услуг', 'ремонт', 'мастер', 'доставка', 'перевоз', 'маникюр', 'парикмахер', 'сантехник', 'электрик', 'куртка', 'платье', 'кроссовк', 'обув', 'одежд', 'размер', 'брюки', 'футболк', 'кот', 'кошка', 'собак', 'щенок', 'питом', 'ветеринар', 'корм', 'велосипед', 'спорт', 'гантел', 'рыбалк', 'охота', 'музык', 'гитара'] },
 ];
+
+export const FALLBACK_LISTING_CATEGORY_BY_CODE = Object.freeze(
+  Object.fromEntries(CATEGORY_RULES.map((rule) => [rule.code, rule.name]))
+);
 
 export function looksLikeAd(text, adKeywords) {
   const normalized = normalizeText(text);
@@ -39,7 +43,7 @@ export function extractStructuredData(text) {
   const description = buildDescription(cleanText);
   const price = extractPrice(cleanText);
   const contacts = extractContacts(cleanText);
-  const category = detectCategory(`${title || ''}\n${description || ''}`);
+  const categoryCode = detectCategory(`${title || ''}\n${description || ''}`);
 
   return {
     title: title || null,
@@ -48,7 +52,8 @@ export function extractStructuredData(text) {
     contactPhone: contacts.contactPhone,
     contactUsername: contacts.contactUsername,
     contactText: contacts.contactText,
-    category: category || null,
+    category: FALLBACK_LISTING_CATEGORY_BY_CODE[categoryCode] || 'Другое',
+    categoryCode,
   };
 }
 
@@ -423,16 +428,16 @@ function cleanupTitleCandidate(text) {
 
 function detectCategory(text) {
   const normalized = String(text || '').toLowerCase();
-  if (!normalized) return 'Другое';
+  if (!normalized) return 'other';
 
   const autoHeuristic =
     /(19\d{2}|20\d{2})\s*г/.test(normalized) &&
     /(объем|двигател|механика|акпп|мкпп|л\/с|привод|пробег|газ)/.test(normalized);
   if (autoHeuristic) {
-    return 'Авто';
+    return 'transport';
   }
 
-  let bestCategory = 'Другое';
+  let bestCategory = 'other';
   let bestScore = 0;
 
   for (const rule of CATEGORY_RULES) {
@@ -442,7 +447,7 @@ function detectCategory(text) {
     }
     if (score > bestScore) {
       bestScore = score;
-      bestCategory = rule.name;
+      bestCategory = rule.code;
     }
   }
 

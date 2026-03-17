@@ -6,7 +6,13 @@ import { loadConfig } from './config.js';
 import { createPostsRepository } from './db/postsRepository.js';
 import { createIrcomApiClient } from './api/ircomClient.js';
 import { createMediaUploader } from './api/mediaUploader.js';
-import { looksLikeAd, extractStructuredData, buildContentHash, buildDuplicateFingerprint } from './parsing/adParser.js';
+import {
+  looksLikeAd,
+  extractStructuredData,
+  buildContentHash,
+  buildDuplicateFingerprint,
+  FALLBACK_LISTING_CATEGORY_BY_CODE,
+} from './parsing/adParser.js';
 import { createPhotoStorage } from './media/photoStorage.js';
 import { buildAuthParams, logAuthError } from './telegram/auth.js';
 
@@ -101,14 +107,83 @@ function getFirstMultiValue(value, { prefix = '' } = {}) {
   return prefix && !firstValue.startsWith(prefix) ? `${prefix}${firstValue}` : firstValue;
 }
 
-function buildListingPayload(post, config) {
+function normalizeCategoryLookupKey(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function createCategoryResolver(categories, config) {
+  const byCode = new Map();
+  const byName = new Map();
+
+  for (const category of Array.isArray(categories) ? categories : []) {
+    const normalizedCode = String(category?.code || '').trim();
+    const normalizedName = String(category?.name || '').trim();
+    const categoryId = Number(category?.categoryId || 0);
+
+    if (!normalizedCode || !normalizedName || !Number.isInteger(categoryId) || categoryId <= 0) {
+      continue;
+    }
+
+    const resolved = { categoryId, categoryCode: normalizedCode, categoryName: normalizedName };
+    byCode.set(normalizedCode, resolved);
+    byName.set(normalizeCategoryLookupKey(normalizedName), resolved);
+  }
+
+  const fallbackDefaultName = String(config?.postApiDefaultCategory || '').trim() || 'Другое';
+
+  const resolve = (inputCategory) => {
+    const rawValue = String(inputCategory || '').trim();
+    const byExactCode = rawValue ? byCode.get(rawValue) : null;
+    if (byExactCode) return byExactCode;
+
+    const fallbackName = rawValue
+      ? (FALLBACK_LISTING_CATEGORY_BY_CODE[rawValue] || rawValue)
+      : fallbackDefaultName;
+    const byResolvedName = byName.get(normalizeCategoryLookupKey(fallbackName));
+    if (byResolvedName) return byResolvedName;
+
+    const byDefaultCode = byCode.get(fallbackDefaultName);
+    if (byDefaultCode) return byDefaultCode;
+
+    const byDefaultName = byName.get(normalizeCategoryLookupKey(fallbackDefaultName));
+    if (byDefaultName) return byDefaultName;
+
+    return {
+      categoryId: null,
+      categoryCode: rawValue || null,
+      categoryName: fallbackName || 'Другое',
+    };
+  };
+
+  return { resolve, size: byCode.size };
+}
+
+async function loadListingCategoryResolver({ config, postApi }) {
+  if (!config.postApiEnabled || config.postApiKind !== 1) {
+    return createCategoryResolver([], config);
+  }
+
+  try {
+    const categories = await postApi.getListingCategories();
+    return createCategoryResolver(categories, config);
+  } catch (error) {
+    console.warn(`Failed to load listing categories from backend, using fallback mapping: ${error?.message || error}`);
+    return createCategoryResolver([], config);
+  }
+}
+
+function buildListingPayload(post, config, categoryResolver) {
   const listingPhone = getFirstMultiValue(post?.contact_phone || post?.contactPhone);
   const listingTelegram = getFirstMultiValue(post?.contact_username || post?.contactUsername, { prefix: '@' });
+  const resolvedCategory = categoryResolver.resolve(post?.category || post?.categoryCode);
+  const fallbackCategoryName = String(post?.category_name || post?.categoryName || '').trim();
+  const categoryName = resolvedCategory.categoryName || fallbackCategoryName || config.postApiDefaultCategory || 'Другое';
 
   return {
     accountId: config.postApiAccountId,
     kind: config.postApiKind,
-    category: String(post?.category || '').trim() || config.postApiDefaultCategory || 'Другое',
+    ...(resolvedCategory.categoryId ? { categoryId: resolvedCategory.categoryId } : {}),
+    category: categoryName,
     title: String(post?.title || '').trim() || 'Объявление',
     description: String(post?.description || '').trim(),
     price: Number(post?.price_value || post?.priceValue) || config.postApiDefaultPrice || 1,
@@ -132,10 +207,10 @@ function buildBackendSyncTarget(config) {
   return JSON.stringify({ endpoint, accountId, kind });
 }
 
-async function syncPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget }) {
+async function syncPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget, categoryResolver }) {
   if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
 
-  const payload = buildListingPayload(post, config);
+  const payload = buildListingPayload(post, config, categoryResolver);
   const uploadedPhotos = [];
   const originalPhotoPaths = getPostPhotoPaths(post).slice(0, MAX_PHOTOS_PER_LISTING);
   const existingPhotoPaths = originalPhotoPaths.filter((photoPath) => fs.existsSync(photoPath));
@@ -355,6 +430,7 @@ export async function runApp() {
   const postApi = createIrcomApiClient(config);
   const mediaUploader = createMediaUploader(config);
   const backendSyncTarget = buildBackendSyncTarget(config);
+  const categoryResolver = await loadListingCategoryResolver({ config, postApi });
   const photoStorage = createPhotoStorage({
     enabled: config.savePhotos || config.postApiEnabled,
     photosDir: config.photosDir,
@@ -428,6 +504,7 @@ export async function runApp() {
               postApi,
               mediaUploader,
               backendSyncTarget,
+              categoryResolver,
             });
             syncedPendingPosts++;
           } catch (err) {
@@ -619,7 +696,7 @@ export async function runApp() {
           contact_phone: structured.contactPhone,
           contact_username: structured.contactUsername,
           contact_text: structured.contactText,
-          category: structured.category,
+          category: structured.categoryCode || structured.category,
           photo_path: photoPaths[0] || null,
           photo_paths: photoPaths.length > 0 ? JSON.stringify(photoPaths) : null,
         });
@@ -637,6 +714,7 @@ export async function runApp() {
               postApi,
               mediaUploader,
               backendSyncTarget,
+              categoryResolver,
             });
             postedToApi++;
             uploadedPhotosToApi += Number(syncResult?.uploadedPhotosCount || 0);

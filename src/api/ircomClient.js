@@ -20,7 +20,7 @@ export function createIrcomApiClient(config) {
   const timeoutMs = Number(config?.postApiTimeoutMs || 15000);
   const enabled = Boolean(config?.postApiEnabled);
 
-  async function createListing(params) {
+  async function request(domain, event, params = {}) {
     if (!enabled) {
       return { skipped: true, reason: 'disabled' };
     }
@@ -35,8 +35,8 @@ export function createIrcomApiClient(config) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          domain: 'listing',
-          event: 'createListing',
+          domain,
+          event,
           params,
         }),
         signal: controller.signal,
@@ -69,52 +69,18 @@ export function createIrcomApiClient(config) {
     }
   }
 
-  async function cleanupImportedListings(params) {
-    if (!enabled) {
-      return { skipped: true, reason: 'disabled' };
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          domain: 'listing',
-          event: 'cleanupImportedListings',
-          params,
-        }),
-        signal: controller.signal,
-      });
-
-      let payload = null;
-      try {
-        payload = await response.json();
-      } catch {
-        payload = null;
-      }
-
-      if (!response.ok) {
-        throw new Error(parseErrorMessage(payload) || `HTTP ${response.status}`);
-      }
-      if (payload?.error) {
-        throw new Error(parseErrorMessage(payload));
-      }
-
-      return { skipped: false, data: payload?.data ?? payload };
-    } catch (error) {
-      if (error?.name === 'AbortError') {
-        throw new Error(`Request timeout after ${timeoutMs}ms`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
+  async function createListing(params) {
+    return request('listing', 'createListing', params);
   }
 
-  return { createListing, cleanupImportedListings };
+  async function cleanupImportedListings(params) {
+    return request('listing', 'cleanupImportedListings', params);
+  }
+
+  async function getListingCategories() {
+    const response = await request('dictionary', 'getListingCategories', {});
+    return response?.data || [];
+  }
+
+  return { createListing, cleanupImportedListings, getListingCategories };
 }
