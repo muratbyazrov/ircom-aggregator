@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 const MAX_TITLE_LENGTH = 60;
 const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
+const PRICE_HINT_RE = /(цена|стоимость|продаю\s+за|за\s+\d|отдам|всего|итог|руб|₽|тыс|тысяч|торг|🍋|млн|мл)/i;
 const LISTING_INTENT_RE = /(продам|продаю|продается|продаётся|продажа|продажи|отдам|куплю|сдам|сдается|сдаётся|сниму|аренда|обмен|ваканси|ищу|ищем|требуетс|зарплат|резюме)/i;
 const SERVICE_INTENT_RE = /(услуг|оказываю|предлагаю услуги|на дому|с выездом|выезд|мастер на час|маникюр|педикюр|бров|ресниц|парикмахер|косметолог|сантехник|электрик|репетитор|курсы|обучен|уборк|клининг|шиномонтаж|автосервис|разработка сайтов|telegram-бот|telegram bot|телеграм-бот|чат-бот|бот для|бот на заказ|ремонт[а-я]* автостек|ремонт[а-я]* лобов|ремонт[а-я]* квартир|ремонт[а-я]* под ключ|демонтаж|монтаж|укладка кафеля)/i;
 
@@ -280,16 +281,24 @@ function extractPrice(text) {
 
   const lineCandidates = rawWithoutPhones.split('\n');
   for (const line of lineCandidates) {
-    const hasPriceHint = /(цена|стоимость|продаю\s+за|за\s+\d|отдам|всего|итог|руб|₽|тыс|тысяч)/i.test(line);
+    const hasPriceHint = PRICE_HINT_RE.test(line);
     if (!hasPriceHint) continue;
+    for (const item of parseSpecialPriceCandidates(line)) {
+      candidates.push({ value: item.value, weight: item.weight + 3 });
+    }
     for (const item of parsePriceCandidatesFromFragment(line)) {
       candidates.push({ value: item.value, weight: item.weight + 3 });
     }
   }
 
-  const valueWithCurrency = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z]))/gi;
+  for (const item of parseSpecialPriceCandidates(rawWithoutPhones)) {
+    candidates.push(item);
+  }
+
+  const valueWithCurrency = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс(?:яч(?:а|и)?)?|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z]))/gi;
   let match;
   while ((match = valueWithCurrency.exec(rawWithoutPhones)) !== null) {
+    if (isLikelyMileageCandidate(rawWithoutPhones, match.index || 0, match[0], match[2])) continue;
     const value = parseNumericPrice(match[1], match[2]);
     if (value !== null) candidates.push({ value, weight: 4 });
   }
@@ -298,7 +307,7 @@ function extractPrice(text) {
   // если формат "тыс/т" не указан, но значение выглядит как "тысячи рублей".
   const barePriceCandidates = rawWithoutPhones
     .split('\n')
-    .filter((line) => /(цена|стоимость|за\s+\d|отдам|торг)/i.test(line))
+    .filter((line) => /(цена|стоимость|за\s+\d|отдам|торг|🍋|млн|мл)/i.test(line))
     .flatMap((line) => parsePriceCandidatesFromFragment(line, true));
   for (const item of barePriceCandidates) {
     candidates.push({ value: item.value, weight: item.weight + 2 });
@@ -325,12 +334,18 @@ function extractPrice(text) {
 function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
   const result = [];
   const rawFragment = String(fragment || '');
-  const re = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)(?:\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z])))?/gi;
+  for (const item of parseSpecialPriceCandidates(rawFragment)) {
+    result.push(item);
+  }
+
+  const re = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)(?:\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс(?:яч(?:а|и)?)?|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z])))?/gi;
   let match;
   while ((match = re.exec(rawFragment)) !== null) {
     const hasSuffix = Boolean(match[2]);
+    if (hasSuffix && isLikelyMileageCandidate(rawFragment, match.index || 0, match[0], match[2])) continue;
     if (!hasSuffix) {
       const bareToken = String(match[1] || '').trim();
+      if (isLikelyMileageCandidate(rawFragment, match.index || 0, bareToken)) continue;
       const hasThousandsGrouping = /^\d{1,3}(?:[ .,\t]\d{3})+$/.test(bareToken);
       const hasDecimalTail = /\d[.,]\d{1,2}$/.test(bareToken);
       if (!allowBareNumber && !hasThousandsGrouping) continue;
@@ -340,7 +355,7 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
       if (hasDecimalTail && !hasThousandsGrouping) continue;
 
       if (hasThousandsGrouping) {
-        if (/^\d{1,3}[.,]\d{3}$/.test(bareToken)) {
+        if (isSingleThousandsGroupToken(bareToken)) {
           const matchIndex = match.index || 0;
           const before = rawFragment.slice(Math.max(0, matchIndex - 18), matchIndex);
           const after = rawFragment.slice(matchIndex + bareToken.length, matchIndex + bareToken.length + 12);
@@ -359,8 +374,9 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
       const before = rawFragment.slice(Math.max(0, matchIndex - 18), matchIndex);
       const after = rawFragment.slice(matchIndex + bareToken.length, matchIndex + bareToken.length + 12);
       const nearPriceKeyword = /(цена|стоим|за|отдам|всего|итог|торг)/i.test(before) || /(торг|руб|₽)/i.test(after);
+      const hasStrongPriceKeyword = /(цена|стоим|всего|итог)/i.test(before);
       if (!nearPriceKeyword) continue;
-      if (/^\d{1,3}[.,]\d{3}$/.test(bareToken)) {
+      if (isSingleThousandsGroupToken(bareToken)) {
         // OCR часто склеивает "1 300 000" в "1,300" рядом со словом "цена".
         result.push({ value: bareValue * 1000, weight: 3 });
       }
@@ -368,7 +384,7 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
         // В локальных объявлениях "цена 48" обычно значит 48 000.
         result.push({ value: bareValue * 1000, weight: 2 });
       } else if (bareValue >= 1000 && bareValue <= 10000000) {
-        result.push({ value: bareValue, weight: 1 });
+        result.push({ value: bareValue, weight: hasStrongPriceKeyword ? 5 : 1 });
       }
       continue;
     }
@@ -384,15 +400,28 @@ function parseNumericPrice(rawNumber, rawSuffix) {
   const token = String(rawNumber || '').trim();
   if (!token) return null;
 
-  const suffix = String(rawSuffix || '').toLowerCase().replace(/[^a-zа-яё₽]/gi, '');
-  const hasSuffixMultiplier = ['т', 'тыс', 'k', 'к', 'млн', 'мл', 'm'].includes(suffix);
+  const suffix = normalizePriceSuffix(rawSuffix);
   let value;
 
-  if (hasSuffixMultiplier) {
+  if (isThousandSuffix(suffix)) {
+    const groupedDigits = token.replace(/[^\d]/g, '');
+    if (!groupedDigits) return null;
+
+    if (isSingleThousandsGroupToken(token)) {
+      value = Number(groupedDigits) * 1000;
+    } else if (/^\d{1,3}(?:[ .,\t]\d{3})+$/.test(token) || /^\d{4,}$/.test(token)) {
+      value = Number(groupedDigits);
+    } else {
+      const decimalToken = token.replace(/\s+/g, '').replace(',', '.');
+      const decimalValue = Number(decimalToken);
+      if (!Number.isFinite(decimalValue)) return null;
+      value = decimalValue * 1000;
+    }
+  } else if (isMillionSuffix(suffix)) {
     const decimalToken = token.replace(/\s+/g, '').replace(',', '.');
     const decimalValue = Number(decimalToken);
     if (!Number.isFinite(decimalValue)) return null;
-    value = decimalValue;
+    value = decimalValue * 1000000;
   } else {
     const digits = token.replace(/[^\d]/g, '');
     if (!digits) return null;
@@ -400,12 +429,114 @@ function parseNumericPrice(rawNumber, rawSuffix) {
     if (!Number.isFinite(value)) return null;
   }
 
-  if (['т', 'тыс', 'k', 'к'].includes(suffix)) value *= 1000;
-  if (['млн', 'мл', 'm'].includes(suffix)) value *= 1000000;
-
   if (value < 100) return null;
   if (value > 1000000000) return null;
   return Math.round(value);
+}
+
+function parseSpecialPriceCandidates(fragment) {
+  const result = [];
+  const rawFragment = String(fragment || '');
+
+  const lemonSplitRe = /\b(\d{1,2})\s*🍋\s*[.,]?\s*(\d{1,3})\b/gu;
+  let match;
+  while ((match = lemonSplitRe.exec(rawFragment)) !== null) {
+    const millions = Number(match[1]);
+    const thousands = Number(match[2]);
+    if (!Number.isFinite(millions) || !Number.isFinite(thousands)) continue;
+    result.push({ value: millions * 1000000 + thousands * 1000, weight: 7 });
+  }
+
+  const lemonSuffixRe = /(\d{1,4}(?:[.,]\d{1,3})?)\s*🍋(?=\s|$|[^\p{L}\p{N}])/gu;
+  while ((match = lemonSuffixRe.exec(rawFragment)) !== null) {
+    const value = parseLemonPrice(match[1]);
+    if (value !== null) result.push({ value, weight: 6 });
+  }
+
+  const splitMillionRe = /(\d{1,2})\s*[.,]\s*(\d{1,3})\s*(?:млн?|мл)(?=\s|$|[^\p{L}\p{N}])/giu;
+  while ((match = splitMillionRe.exec(rawFragment)) !== null) {
+    const whole = Number(match[1]);
+    const fraction = String(match[2] || '').trim();
+    if (!Number.isFinite(whole) || !fraction) continue;
+    const value = Math.round(Number(`${whole}.${fraction}`) * 1000000);
+    if (!Number.isFinite(value)) continue;
+    result.push({ value, weight: 6 });
+  }
+
+  const shortMillionRe = /(\d{1,2})\s*[.,]\s*(\d{1,3})\s*м(?:\s*р)?(?=\s|$|[^\p{L}\p{N}])/giu;
+  while ((match = shortMillionRe.exec(rawFragment)) !== null) {
+    const whole = Number(match[1]);
+    const fraction = String(match[2] || '').trim();
+    if (!Number.isFinite(whole) || !fraction) continue;
+    const value = Math.round(Number(`${whole}.${fraction}`) * 1000000);
+    if (!Number.isFinite(value)) continue;
+    result.push({ value, weight: 6 });
+  }
+
+  return result;
+}
+
+function parseLemonPrice(rawToken) {
+  const token = String(rawToken || '').replace(/\s+/g, '').trim();
+  if (!token) return null;
+
+  if (/^\d{3,4}$/.test(token)) {
+    return Number(token) * 1000;
+  }
+
+  if (/^\d{1,2}$/.test(token)) {
+    return Number(token) * 1000000;
+  }
+
+  if (/^\d{1,2}[.,]\d{1,3}$/.test(token)) {
+    const decimalValue = Number(token.replace(',', '.'));
+    if (!Number.isFinite(decimalValue)) return null;
+    return Math.round(decimalValue * 1000000);
+  }
+
+  return null;
+}
+
+function normalizePriceSuffix(rawSuffix) {
+  const suffix = String(rawSuffix || '').toLowerCase().replace(/[^a-zа-яё₽]/gi, '');
+  if (suffix === 'т') return 'т';
+  if (suffix === 'k') return 'k';
+  if (suffix === 'к') return 'к';
+  if (suffix.startsWith('тыс') || suffix.startsWith('тысяч')) return 'тыс';
+  if (suffix === 'млн') return 'млн';
+  if (suffix === 'мл') return 'мл';
+  if (suffix === 'm') return 'm';
+  return suffix;
+}
+
+function isThousandSuffix(suffix) {
+  return ['т', 'тыс', 'k', 'к'].includes(suffix);
+}
+
+function isMillionSuffix(suffix) {
+  return ['млн', 'мл', 'm'].includes(suffix);
+}
+
+function isSingleThousandsGroupToken(token) {
+  return /^\d[ .,\t]\d{3}$/.test(String(token || '').trim());
+}
+
+function isLikelyMileageCandidate(fragment, matchIndex, matchedText, rawSuffix = '') {
+  const suffix = normalizePriceSuffix(rawSuffix);
+  if (rawSuffix && !isThousandSuffix(suffix)) return false;
+
+  const matchLength = String(matchedText || '').length;
+  const before = String(fragment || '').slice(Math.max(0, matchIndex - 24), matchIndex);
+  const after = String(fragment || '').slice(matchIndex + matchLength, matchIndex + matchLength + 24);
+  const beforeTrimmed = before.trimEnd();
+  const afterTrimmed = after.trimStart();
+
+  if (/(?:^|[^\p{L}\p{N}_])пробег(?:а)?\s*$/iu.test(beforeTrimmed)) return true;
+  if (/^(?:км|km|миль?)(?:\s|$|[^\p{L}\p{N}])/iu.test(afterTrimmed)) return true;
+  if (/^(?:тыс\.?\s*км|т\.?\s*(?:км|м))(?:\s|$|[^\p{L}\p{N}])/iu.test(afterTrimmed)) return true;
+  if (/^м(?:\s|$|[^\p{L}\p{N}])/iu.test(afterTrimmed) && /пробег/iu.test(before + after)) return true;
+
+  return false;
 }
 
 function stripPhoneLikeNumbers(text) {
