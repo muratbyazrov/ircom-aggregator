@@ -77,10 +77,11 @@ export function createIrcomApiClient(config) {
     return request('listing', 'cleanupImportedListings', params);
   }
 
-  async function getListingCategories() {
-    const response = await request('dictionary', 'getListingCategories', {});
+  async function getCategories(kind = 1) {
+    const event = Number(kind) === 2 ? 'getServiceCategories' : 'getListingCategories';
+    const response = await request('dictionary', event, {});
     return response?.data || [];
   }
 
-  return { createListing, cleanupImportedListings, getListingCategories };
+  return { createListing, cleanupImportedListings, getCategories };
 }

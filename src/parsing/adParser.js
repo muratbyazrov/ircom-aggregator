@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 
 const MAX_TITLE_LENGTH = 60;
 const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
+const LISTING_INTENT_RE = /(продам|продаю|продается|продаётся|продажа|продажи|отдам|куплю|сдам|сдается|сдаётся|сниму|аренда|обмен|ваканси|ищу|ищем|требуетс|зарплат|резюме)/i;
+const SERVICE_INTENT_RE = /(услуг|оказываю|предлагаю услуги|на дому|с выездом|выезд|мастер на час|маникюр|педикюр|бров|ресниц|парикмахер|косметолог|сантехник|электрик|репетитор|курсы|обучен|уборк|клининг|шиномонтаж|автосервис|разработка сайтов|telegram-бот|telegram bot|телеграм-бот|чат-бот|бот для|бот на заказ|ремонт[а-я]* автостек|ремонт[а-я]* лобов|ремонт[а-я]* квартир|ремонт[а-я]* под ключ|демонтаж|монтаж|укладка кафеля)/i;
 
-const CATEGORY_RULES = [
+const LISTING_CATEGORY_RULES = [
   { code: 'transport', name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'ваз', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin', 'л/с', 'мотор', 'привод', 'механика', 'бампер'] },
   { code: 'real_estate', name: 'Недвижимость', keywords: ['квартир', 'дом', 'комнат', 'аренда', 'сдам', 'сдается', 'недвижим', 'офис', 'посуточно', 'ипотек', 'район', 'раен', 'участок', 'земля'] },
   { code: 'electronics', name: 'Электроника', keywords: ['iphone', 'айфон', 'samsung', 'xiaomi', 'телефон', 'смартфон', 'ноутбук', 'macbook', 'пк', 'playstation', 'ps5', 'ipad', 'наушник', 'xbox', 'x box'] },
@@ -13,8 +15,23 @@ const CATEGORY_RULES = [
   { code: 'other', name: 'Другое', keywords: ['услуг', 'ремонт', 'мастер', 'доставка', 'перевоз', 'маникюр', 'парикмахер', 'сантехник', 'электрик', 'куртка', 'платье', 'кроссовк', 'обув', 'одежд', 'размер', 'брюки', 'футболк', 'кот', 'кошка', 'собак', 'щенок', 'питом', 'ветеринар', 'корм', 'велосипед', 'спорт', 'гантел', 'рыбалк', 'охота', 'музык', 'гитара'] },
 ];
 
+const SERVICE_CATEGORY_RULES = [
+  { code: 'beauty', name: 'Красота', keywords: ['маникюр', 'педикюр', 'бров', 'ресниц', 'парикмахер', 'окрашиван', 'стрижк', 'укладк', 'макияж', 'косметолог', 'эпиляц', 'шугаринг', 'барбер'] },
+  { code: 'repair', name: 'Ремонт', keywords: ['ремонт', 'мастер', 'сантехник', 'электрик', 'почин', 'установк', 'монтаж', 'кондиционер', 'бойлер', 'котел', 'холодильник', 'стирал'] },
+  { code: 'construction', name: 'Строительство', keywords: ['строитель', 'строительств', 'отделк', 'штукатур', 'маляр', 'плиточ', 'кафель', 'кровл', 'фасад', 'бетон', 'фундамент', 'сварк', 'демонтаж', 'монтаж'] },
+  { code: 'education', name: 'Обучение', keywords: ['обучен', 'репетитор', 'курсы', 'уроки', 'подготов', 'подготовк', 'английск', 'математ', 'школа', 'занятия', 'логопед'] },
+  { code: 'it', name: 'IT-услуги', keywords: ['it', 'айти', 'сайт', 'лендинг', 'telegram bot', 'telegram-бот', 'телеграм-бот', 'чат-бот', 'бот для', 'бот на заказ', 'разработк', 'программист', 'seo', 'smm', 'таргет', 'настройк пк', 'настройка пк', 'компьютер'] },
+  { code: 'auto_service', name: 'Автосервис', keywords: ['автосервис', 'сто', 'шиномонтаж', 'развал', 'сход', 'диагностик', 'замена масла', 'автоэлектрик', 'кузовн', 'полировк', 'тонировк', 'автостекл', 'лобов'] },
+  { code: 'cleaning', name: 'Уборка', keywords: ['уборк', 'клининг', 'химчист', 'мойка окон', 'генеральн уборк', 'домработниц', 'убираю', 'чистка'] },
+  { code: 'other', name: 'Другое', keywords: ['услуг', 'доставка', 'перевоз', 'грузчик', 'помощь', 'на заказ'] },
+];
+
 export const FALLBACK_LISTING_CATEGORY_BY_CODE = Object.freeze(
-  Object.fromEntries(CATEGORY_RULES.map((rule) => [rule.code, rule.name]))
+  Object.fromEntries(LISTING_CATEGORY_RULES.map((rule) => [rule.code, rule.name]))
+);
+
+export const FALLBACK_SERVICE_CATEGORY_BY_CODE = Object.freeze(
+  Object.fromEntries(SERVICE_CATEGORY_RULES.map((rule) => [rule.code, rule.name]))
 );
 
 export function looksLikeAd(text, adKeywords) {
@@ -26,24 +43,80 @@ export function looksLikeAd(text, adKeywords) {
   const contacts = extractContacts(normalized);
   const hasContacts = Boolean(contacts.contactPhone || contacts.contactUsername || contacts.contactText);
   const hasSellingVerb = /(продам|продаю|куплю|сдам|ищу|обмен|торг|ваканси|работа|услуг)/i.test(normalized);
+  const hasServiceIntent = detectPostKind(normalized) === 2 || SERVICE_INTENT_RE.test(normalized);
 
   let score = 0;
   if (hasAdKeyword) score += 2;
   if (hasPrice) score += 2;
   if (hasContacts) score += 1;
   if (hasSellingVerb) score += 1;
+  if (hasServiceIntent) score += 2;
 
   return score >= 2;
 }
 
-export function extractStructuredData(text) {
+export function detectPostKind(text) {
+  const normalized = normalizeText(text).toLowerCase();
+  if (!normalized) return 1;
+
+  if (/(без ремонт[а-я]*|не требует ремонт[а-я]*|не после ремонт[а-я]*)/i.test(normalized)) {
+    return 1;
+  }
+
+  let listingScore = scoreCategoryRules(normalized, LISTING_CATEGORY_RULES, { includeOther: false });
+  let serviceScore = scoreCategoryRules(normalized, SERVICE_CATEGORY_RULES, { includeOther: false });
+  const hasListingIntent = LISTING_INTENT_RE.test(normalized);
+  const hasServiceIntent = SERVICE_INTENT_RE.test(normalized);
+
+  if (hasListingIntent) listingScore += 3;
+  if (hasServiceIntent) serviceScore += 3;
+
+  if (/(ваканси|требуетс|зарплат|резюме|сотрудник)/i.test(normalized)) listingScore += 3;
+  if (/(ищем работу|ищу работу|ищем подработку|ищу подработку)/i.test(normalized)) listingScore += 4;
+  if (/(с выездом|на дому|оказываю услуги|предлагаю услуги)/i.test(normalized)) serviceScore += 2;
+
+  if (hasListingIntent && !hasServiceIntent) {
+    return 1;
+  }
+
+  if (hasServiceIntent && !hasListingIntent) {
+    return 2;
+  }
+
+  if (
+    !hasListingIntent
+    && serviceScore >= 1
+    && /^(ремонт[а-я]*|маникюр|педикюр|демонтаж|монтаж|укладка|сантехник|электрик|репетитор|уборк|разработка|шиномонтаж|автосервис)/i.test(normalized)
+  ) {
+    return 2;
+  }
+
+  if (serviceScore >= 4 && serviceScore > listingScore) {
+    return 2;
+  }
+
+  if (serviceScore >= 3 && !hasListingIntent) {
+    return 2;
+  }
+
+  if (listingScore >= serviceScore) {
+    return 1;
+  }
+
+  return 1;
+}
+
+export function extractStructuredData(text, options = {}) {
   const cleanText = normalizeText(text);
   const lines = splitLines(cleanText);
   const title = pickTitle(lines);
   const description = buildDescription(cleanText);
   const price = extractPrice(cleanText);
   const contacts = extractContacts(cleanText);
-  const categoryCode = detectCategory(`${title || ''}\n${description || ''}`);
+  const categoryCode = detectCategory(`${title || ''}\n${description || ''}`, options);
+  const fallbackCategoryByCode = Number(options?.kind) === 2
+    ? FALLBACK_SERVICE_CATEGORY_BY_CODE
+    : FALLBACK_LISTING_CATEGORY_BY_CODE;
 
   return {
     title: title || null,
@@ -52,7 +125,7 @@ export function extractStructuredData(text) {
     contactPhone: contacts.contactPhone,
     contactUsername: contacts.contactUsername,
     contactText: contacts.contactText,
-    category: FALLBACK_LISTING_CATEGORY_BY_CODE[categoryCode] || 'Другое',
+    category: fallbackCategoryByCode[categoryCode] || 'Другое',
     categoryCode,
   };
 }
@@ -426,11 +499,31 @@ function cleanupTitleCandidate(text) {
 }
 
 
-function detectCategory(text) {
+function getCategoryRules(kind) {
+  return Number(kind) === 2 ? SERVICE_CATEGORY_RULES : LISTING_CATEGORY_RULES;
+}
+
+function scoreCategoryRules(normalized, rules, { includeOther = true } = {}) {
+  let score = 0;
+
+  for (const rule of rules) {
+    if (!includeOther && rule.code === 'other') continue;
+    for (const keyword of rule.keywords) {
+      if (normalized.includes(keyword)) score += 1;
+    }
+  }
+
+  return score;
+}
+
+function detectCategory(text, options = {}) {
   const normalized = String(text || '').toLowerCase();
   if (!normalized) return 'other';
+  const kind = Number(options?.kind) === 2 ? 2 : 1;
+  const categoryRules = getCategoryRules(kind);
 
   const autoHeuristic =
+    kind === 1 &&
     /(19\d{2}|20\d{2})\s*г/.test(normalized) &&
     /(объем|двигател|механика|акпп|мкпп|л\/с|привод|пробег|газ)/.test(normalized);
   if (autoHeuristic) {
@@ -440,7 +533,7 @@ function detectCategory(text) {
   let bestCategory = 'other';
   let bestScore = 0;
 
-  for (const rule of CATEGORY_RULES) {
+  for (const rule of categoryRules) {
     let score = 0;
     for (const keyword of rule.keywords) {
       if (normalized.includes(keyword)) score += 1;

@@ -8,10 +8,12 @@ import { createIrcomApiClient } from './api/ircomClient.js';
 import { createMediaUploader } from './api/mediaUploader.js';
 import {
   looksLikeAd,
+  detectPostKind,
   extractStructuredData,
   buildContentHash,
   buildDuplicateFingerprint,
   FALLBACK_LISTING_CATEGORY_BY_CODE,
+  FALLBACK_SERVICE_CATEGORY_BY_CODE,
 } from './parsing/adParser.js';
 import { createPhotoStorage } from './media/photoStorage.js';
 import { buildAuthParams, logAuthError } from './telegram/auth.js';
@@ -111,7 +113,20 @@ function normalizeCategoryLookupKey(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function createCategoryResolver(categories, config) {
+function getStorageTableName(config) {
+  return config?.pipelineMode === 'services' ? 'service_posts' : 'posts';
+}
+
+function matchesPipelineMode(text, config) {
+  const detectedKind = detectPostKind(text);
+  return config?.pipelineMode === 'services' ? detectedKind === 2 : detectedKind !== 2;
+}
+
+function getFallbackCategoryMap(kind) {
+  return Number(kind) === 2 ? FALLBACK_SERVICE_CATEGORY_BY_CODE : FALLBACK_LISTING_CATEGORY_BY_CODE;
+}
+
+function createCategoryResolver(categories, config, kind) {
   const byCode = new Map();
   const byName = new Map();
 
@@ -130,6 +145,7 @@ function createCategoryResolver(categories, config) {
   }
 
   const fallbackDefaultName = String(config?.postApiDefaultCategory || '').trim() || 'Другое';
+  const fallbackCategoryByCode = getFallbackCategoryMap(kind);
 
   const resolve = (inputCategory) => {
     const rawValue = String(inputCategory || '').trim();
@@ -137,12 +153,12 @@ function createCategoryResolver(categories, config) {
     if (byExactCode) return byExactCode;
 
     const fallbackName = rawValue
-      ? (FALLBACK_LISTING_CATEGORY_BY_CODE[rawValue] || rawValue)
+      ? (fallbackCategoryByCode[rawValue] || rawValue)
       : fallbackDefaultName;
     const byResolvedName = byName.get(normalizeCategoryLookupKey(fallbackName));
     if (byResolvedName) return byResolvedName;
 
-    const byDefaultCode = byCode.get(fallbackDefaultName);
+    const byDefaultCode = byCode.get(String(config?.postApiDefaultCategoryCode || '').trim());
     if (byDefaultCode) return byDefaultCode;
 
     const byDefaultName = byName.get(normalizeCategoryLookupKey(fallbackDefaultName));
@@ -158,17 +174,17 @@ function createCategoryResolver(categories, config) {
   return { resolve, size: byCode.size };
 }
 
-async function loadListingCategoryResolver({ config, postApi }) {
-  if (!config.postApiEnabled || config.postApiKind !== 1) {
-    return createCategoryResolver([], config);
+async function loadCategoryResolver({ config, postApi }) {
+  if (!config.postApiEnabled) {
+    return createCategoryResolver([], config, config.postApiKind);
   }
 
   try {
-    const categories = await postApi.getListingCategories();
-    return createCategoryResolver(categories, config);
+    const categories = await postApi.getCategories(config.postApiKind);
+    return createCategoryResolver(categories, config, config.postApiKind);
   } catch (error) {
-    console.warn(`Failed to load listing categories from backend, using fallback mapping: ${error?.message || error}`);
-    return createCategoryResolver([], config);
+    console.warn(`Failed to load categories from backend, using fallback mapping: ${error?.message || error}`);
+    return createCategoryResolver([], config, config.postApiKind);
   }
 }
 
@@ -426,11 +442,12 @@ function buildMessageUnits(messages) {
 
 export async function runApp() {
   const config = loadConfig();
-  const db = createPostsRepository('data.db');
+  const storageTableName = getStorageTableName(config);
+  const db = createPostsRepository('data.db', { tableName: storageTableName });
   const postApi = createIrcomApiClient(config);
   const mediaUploader = createMediaUploader(config);
   const backendSyncTarget = buildBackendSyncTarget(config);
-  const categoryResolver = await loadListingCategoryResolver({ config, postApi });
+  const categoryResolver = await loadCategoryResolver({ config, postApi });
   const photoStorage = createPhotoStorage({
     enabled: config.savePhotos || config.postApiEnabled,
     photosDir: config.photosDir,
@@ -461,7 +478,7 @@ export async function runApp() {
 
     if (config.clearBeforeRun) {
       const deletedRows = db.clear();
-      console.log(`\nDB cleanup enabled: removed ${deletedRows} rows from posts`);
+      console.log(`\nDB cleanup enabled: removed ${deletedRows} rows from ${storageTableName}`);
       if (config.postApiEnabled) {
         console.log('Backend sync note: clear-before-run resends the latest Telegram posts and can skew backend-to-backend comparisons.');
       }
@@ -556,7 +573,8 @@ export async function runApp() {
     }
 
     console.log(`\nSources configured: ${config.sources.length}`);
-    console.log(`Filter mode: ${config.onlyAds ? 'only ads' : 'all posts'}`);
+    console.log(`Pipeline mode: ${config.pipelineMode} -> table ${storageTableName} -> backend kind ${config.postApiKind}`);
+    console.log(`Filter mode: ${config.onlyAds ? 'only marketplace-like posts' : 'all posts'}`);
     if (config.onlyAds) {
       console.log(`Ad keywords: ${config.adKeywords.join(', ')}`);
     }
@@ -607,7 +625,7 @@ export async function runApp() {
           skippedAsRepost++;
           continue;
         }
-        if (config.onlyAds && (!text || !looksLikeAd(text, config.adKeywords))) {
+        if (config.onlyAds && (!text || !looksLikeAd(text, config.adKeywords) || !matchesPipelineMode(text, config))) {
           skippedByFilter++;
           continue;
         }
@@ -615,7 +633,7 @@ export async function runApp() {
         const senderId = normalizeSenderId(
           primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
         );
-        const structured = extractStructuredData(text);
+        const structured = extractStructuredData(text, { kind: config.postApiKind });
         const postDateIso = primaryMessage.date?.toISOString?.() || new Date().toISOString();
         const contentHash = buildContentHash(text);
         const dedupeKey = buildDuplicateFingerprint(text);

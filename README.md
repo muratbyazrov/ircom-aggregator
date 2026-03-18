@@ -8,7 +8,7 @@ Telegram aggregator for marketplace-like posts with structured extraction into S
 - `src/app.js`: orchestration (auth, fetch loop, filtering, persistence)
 - `src/config.js`: env parsing and validation
 - `src/db/postsRepository.js`: SQLite schema and upsert/cleanup operations
-- `src/parsing/adParser.js`: ad detection + title/description/price/contact extraction
+- `src/parsing/adParser.js`: ad/service detection + title/description/price/contact/category extraction
 - `src/media/photoStorage.js`: optional media download and local file storage
 - `src/telegram/auth.js`: Telegram interactive auth flow and auth error handling
 
@@ -22,7 +22,8 @@ npm start
 
 - `TG_SOURCES`: comma-separated list (`@channel`, `https://t.me/...`)
 - `TG_FETCH_LIMIT`: messages per source
-- `TG_ONLY_ADS`: `true/false` filter for ads only
+- `TG_ONLY_ADS`: `true/false` filter for marketplace-like posts only (ads and services)
+- `TG_PIPELINE_MODE`: current run mode (`ads` or `services`); also selects local SQLite table
 - `TG_AD_KEYWORDS`: custom ad keywords
 - `TG_SAVE_PHOTOS`: `true/false` media download
 - `TG_PHOTOS_DIR`: media output folder
@@ -30,7 +31,7 @@ npm start
 - `TG_POST_API_ENABLED`: `true/false` send parsed posts to backend API
 - `TG_POST_API_URL`: backend endpoint (same as frontend `VITE_IRCOM_API_URL`)
 - `TG_POST_API_ACCOUNT_ID`: account id used in `createListing` payload
-- `TG_POST_API_KIND`: listing kind (`1` for ad, `2` for service)
+- `TG_POST_API_KIND`: backend kind (`1` for ad, `2` for service); normally follows `TG_PIPELINE_MODE`
 - `TG_POST_API_DEFAULT_CATEGORY`: fallback category when parser returns null
 - `TG_POST_API_DEFAULT_PRICE`: fallback price when parser cannot extract one
 - `TG_POST_API_TIMEOUT_MS`: HTTP timeout for backend posting
@@ -49,7 +50,7 @@ npm start
 - `contact_phone`: comma-separated phones
 - `contact_username`: comma-separated Telegram usernames
 - `contact_text`: normalized contacts summary (e.g. `phone:+7999...; tg:@name`)
-- `category`: rule-based category (e.g. `Авто`, `Недвижимость`, `Электроника`)
+- `category`: rule-based category (e.g. `Авто`, `Недвижимость`, `Электроника` for ads; `Красота`, `Ремонт`, `IT-услуги` for services)
 - `photo_path`: first local photo path when available
 - `photo_paths`: JSON array with all local photo paths when available
 

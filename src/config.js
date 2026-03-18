@@ -35,6 +35,28 @@ function parseBool(value, defaultValue = false) {
   return defaultValue;
 }
 
+function parsePostApiKind(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function parsePipelineMode(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (['ads', 'ad', 'listing', 'listings'].includes(normalized)) return 'ads';
+  if (['services', 'service'].includes(normalized)) return 'services';
+  return normalized;
+}
+
+function resolvePipelineMode(rawMode, rawKind) {
+  const parsedMode = parsePipelineMode(rawMode);
+  if (parsedMode) return parsedMode;
+  return parsePostApiKind(rawKind) === 2 ? 'services' : 'ads';
+}
+
 function normalizeSource(rawSource) {
   const src = String(rawSource || '').trim();
   if (!src) return '';
@@ -56,6 +78,10 @@ function resolveAdKeywords() {
 }
 
 export function loadConfig() {
+  const explicitPostApiKind = parsePostApiKind(process.env.TG_POST_API_KIND);
+  const pipelineMode = resolvePipelineMode(process.env.TG_PIPELINE_MODE, process.env.TG_POST_API_KIND);
+  const derivedPostApiKind = pipelineMode === 'services' ? 2 : 1;
+
   const config = {
     apiId: Number(process.env.TG_API_ID),
     apiHash: process.env.TG_API_HASH,
@@ -67,12 +93,13 @@ export function loadConfig() {
     clearBeforeRun: parseBool(process.env.TG_CLEAR_BEFORE_RUN, false),
     photosDir: String(process.env.TG_PHOTOS_DIR || 'media').trim(),
     session: process.env.TG_SESSION || '',
+    pipelineMode,
     sources: resolveSources(),
     adKeywords: resolveAdKeywords(),
     postApiEnabled: parseBool(process.env.TG_POST_API_ENABLED, false),
     postApiUrl: String(process.env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
     postApiAccountId: Number(process.env.TG_POST_API_ACCOUNT_ID || 0),
-    postApiKind: Number(process.env.TG_POST_API_KIND || 1),
+    postApiKind: explicitPostApiKind || derivedPostApiKind,
     postApiDefaultCategory: String(process.env.TG_POST_API_DEFAULT_CATEGORY || 'Другое').trim(),
     postApiDefaultPrice: Number(process.env.TG_POST_API_DEFAULT_PRICE || 1),
     postApiTimeoutMs: Number(process.env.TG_POST_API_TIMEOUT_MS || 15000),
@@ -102,6 +129,16 @@ function validateConfig(config) {
     throw new Error(
       'No sources configured. Add TG_SOURCES in .env, e.g. TG_SOURCES=@channel1,@channel2,https://t.me/some_group'
     );
+  }
+  if (!['ads', 'services'].includes(config.pipelineMode)) {
+    throw new Error('Invalid TG_PIPELINE_MODE in .env. Expected ads or services.');
+  }
+  if (
+    Number.isInteger(config.postApiKind)
+    && ((config.pipelineMode === 'services' && config.postApiKind !== 2)
+      || (config.pipelineMode === 'ads' && config.postApiKind !== 1))
+  ) {
+    throw new Error('TG_PIPELINE_MODE conflicts with TG_POST_API_KIND in .env. Keep them aligned.');
   }
   if (config.postApiEnabled) {
     if (!config.postApiUrl) {

@@ -1,10 +1,15 @@
 import Database from 'better-sqlite3';
 
-export function createPostsRepository(dbPath = 'data.db') {
+function resolveTableName(tableName) {
+  return tableName === 'service_posts' ? 'service_posts' : 'posts';
+}
+
+export function createPostsRepository(dbPath = 'data.db', { tableName = 'posts' } = {}) {
   const db = new Database(dbPath);
+  const table = resolveTableName(tableName);
 
   db.exec(`
-    CREATE TABLE IF NOT EXISTS posts (
+    CREATE TABLE IF NOT EXISTS ${table} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       source TEXT NOT NULL,
       msg_id INTEGER NOT NULL,
@@ -14,11 +19,11 @@ export function createPostsRepository(dbPath = 'data.db') {
     );
   `);
 
-  ensureSchema(db);
+  ensureSchema(db, table);
 
   // noinspection SqlDialectInspection,SqlNoDataSourceInspection
   const upsertStmt = db.prepare(`
-    INSERT INTO posts (
+    INSERT INTO ${table} (
       source,
       msg_id,
       date,
@@ -67,67 +72,67 @@ export function createPostsRepository(dbPath = 'data.db') {
       contact_username = excluded.contact_username,
       contact_text = excluded.contact_text,
       category = excluded.category,
-      photo_path = COALESCE(excluded.photo_path, posts.photo_path),
-      photo_paths = COALESCE(excluded.photo_paths, posts.photo_paths),
+      photo_path = COALESCE(excluded.photo_path, ${table}.photo_path),
+      photo_paths = COALESCE(excluded.photo_paths, ${table}.photo_paths),
       backend_synced_at = CASE
-        WHEN posts.date IS DISTINCT FROM excluded.date
-          OR posts.permalink IS DISTINCT FROM excluded.permalink
-          OR posts.title IS DISTINCT FROM excluded.title
-          OR posts.description IS DISTINCT FROM excluded.description
-          OR posts.price_value IS DISTINCT FROM excluded.price_value
-          OR posts.dedupe_key IS DISTINCT FROM excluded.dedupe_key
-          OR posts.sender_id IS DISTINCT FROM excluded.sender_id
-          OR posts.content_hash IS DISTINCT FROM excluded.content_hash
-          OR posts.contact_phone IS DISTINCT FROM excluded.contact_phone
-          OR posts.contact_username IS DISTINCT FROM excluded.contact_username
-          OR posts.contact_text IS DISTINCT FROM excluded.contact_text
-          OR posts.category IS DISTINCT FROM excluded.category
-          OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
-          OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
+        WHEN ${table}.date IS DISTINCT FROM excluded.date
+          OR ${table}.permalink IS DISTINCT FROM excluded.permalink
+          OR ${table}.title IS DISTINCT FROM excluded.title
+          OR ${table}.description IS DISTINCT FROM excluded.description
+          OR ${table}.price_value IS DISTINCT FROM excluded.price_value
+          OR ${table}.dedupe_key IS DISTINCT FROM excluded.dedupe_key
+          OR ${table}.sender_id IS DISTINCT FROM excluded.sender_id
+          OR ${table}.content_hash IS DISTINCT FROM excluded.content_hash
+          OR ${table}.contact_phone IS DISTINCT FROM excluded.contact_phone
+          OR ${table}.contact_username IS DISTINCT FROM excluded.contact_username
+          OR ${table}.contact_text IS DISTINCT FROM excluded.contact_text
+          OR ${table}.category IS DISTINCT FROM excluded.category
+          OR COALESCE(excluded.photo_path, ${table}.photo_path) IS DISTINCT FROM ${table}.photo_path
+          OR COALESCE(excluded.photo_paths, ${table}.photo_paths) IS DISTINCT FROM ${table}.photo_paths
         THEN NULL
-        ELSE posts.backend_synced_at
+        ELSE ${table}.backend_synced_at
       END,
       backend_last_error = CASE
-        WHEN posts.date IS DISTINCT FROM excluded.date
-          OR posts.permalink IS DISTINCT FROM excluded.permalink
-          OR posts.title IS DISTINCT FROM excluded.title
-          OR posts.description IS DISTINCT FROM excluded.description
-          OR posts.price_value IS DISTINCT FROM excluded.price_value
-          OR posts.dedupe_key IS DISTINCT FROM excluded.dedupe_key
-          OR posts.sender_id IS DISTINCT FROM excluded.sender_id
-          OR posts.content_hash IS DISTINCT FROM excluded.content_hash
-          OR posts.contact_phone IS DISTINCT FROM excluded.contact_phone
-          OR posts.contact_username IS DISTINCT FROM excluded.contact_username
-          OR posts.contact_text IS DISTINCT FROM excluded.contact_text
-          OR posts.category IS DISTINCT FROM excluded.category
-          OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
-          OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
+        WHEN ${table}.date IS DISTINCT FROM excluded.date
+          OR ${table}.permalink IS DISTINCT FROM excluded.permalink
+          OR ${table}.title IS DISTINCT FROM excluded.title
+          OR ${table}.description IS DISTINCT FROM excluded.description
+          OR ${table}.price_value IS DISTINCT FROM excluded.price_value
+          OR ${table}.dedupe_key IS DISTINCT FROM excluded.dedupe_key
+          OR ${table}.sender_id IS DISTINCT FROM excluded.sender_id
+          OR ${table}.content_hash IS DISTINCT FROM excluded.content_hash
+          OR ${table}.contact_phone IS DISTINCT FROM excluded.contact_phone
+          OR ${table}.contact_username IS DISTINCT FROM excluded.contact_username
+          OR ${table}.contact_text IS DISTINCT FROM excluded.contact_text
+          OR ${table}.category IS DISTINCT FROM excluded.category
+          OR COALESCE(excluded.photo_path, ${table}.photo_path) IS DISTINCT FROM ${table}.photo_path
+          OR COALESCE(excluded.photo_paths, ${table}.photo_paths) IS DISTINCT FROM ${table}.photo_paths
         THEN NULL
-        ELSE posts.backend_last_error
+        ELSE ${table}.backend_last_error
       END,
       backend_sync_target = CASE
-        WHEN posts.date IS DISTINCT FROM excluded.date
-          OR posts.permalink IS DISTINCT FROM excluded.permalink
-          OR posts.title IS DISTINCT FROM excluded.title
-          OR posts.description IS DISTINCT FROM excluded.description
-          OR posts.price_value IS DISTINCT FROM excluded.price_value
-          OR posts.dedupe_key IS DISTINCT FROM excluded.dedupe_key
-          OR posts.sender_id IS DISTINCT FROM excluded.sender_id
-          OR posts.content_hash IS DISTINCT FROM excluded.content_hash
-          OR posts.contact_phone IS DISTINCT FROM excluded.contact_phone
-          OR posts.contact_username IS DISTINCT FROM excluded.contact_username
-          OR posts.contact_text IS DISTINCT FROM excluded.contact_text
-          OR posts.category IS DISTINCT FROM excluded.category
-          OR COALESCE(excluded.photo_path, posts.photo_path) IS DISTINCT FROM posts.photo_path
-          OR COALESCE(excluded.photo_paths, posts.photo_paths) IS DISTINCT FROM posts.photo_paths
+        WHEN ${table}.date IS DISTINCT FROM excluded.date
+          OR ${table}.permalink IS DISTINCT FROM excluded.permalink
+          OR ${table}.title IS DISTINCT FROM excluded.title
+          OR ${table}.description IS DISTINCT FROM excluded.description
+          OR ${table}.price_value IS DISTINCT FROM excluded.price_value
+          OR ${table}.dedupe_key IS DISTINCT FROM excluded.dedupe_key
+          OR ${table}.sender_id IS DISTINCT FROM excluded.sender_id
+          OR ${table}.content_hash IS DISTINCT FROM excluded.content_hash
+          OR ${table}.contact_phone IS DISTINCT FROM excluded.contact_phone
+          OR ${table}.contact_username IS DISTINCT FROM excluded.contact_username
+          OR ${table}.contact_text IS DISTINCT FROM excluded.contact_text
+          OR ${table}.category IS DISTINCT FROM excluded.category
+          OR COALESCE(excluded.photo_path, ${table}.photo_path) IS DISTINCT FROM ${table}.photo_path
+          OR COALESCE(excluded.photo_paths, ${table}.photo_paths) IS DISTINCT FROM ${table}.photo_paths
         THEN NULL
-        ELSE posts.backend_sync_target
+        ELSE ${table}.backend_sync_target
       END
   `);
 
   // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-  const clearStmt = db.prepare('DELETE FROM posts');
-  const clearSyncedStmt = db.prepare('DELETE FROM posts WHERE backend_synced_at IS NOT NULL');
+  const clearStmt = db.prepare(`DELETE FROM ${table}`);
+  const clearSyncedStmt = db.prepare(`DELETE FROM ${table} WHERE backend_synced_at IS NOT NULL`);
   const findExpiredStmt = db.prepare(`
     SELECT
       source,
@@ -135,11 +140,11 @@ export function createPostsRepository(dbPath = 'data.db') {
       date,
       photo_path,
       photo_paths
-    FROM posts
+    FROM ${table}
     WHERE date < @cutoff_date
     ORDER BY date ASC
   `);
-  const deleteExpiredStmt = db.prepare('DELETE FROM posts WHERE date < @cutoff_date');
+  const deleteExpiredStmt = db.prepare(`DELETE FROM ${table} WHERE date < @cutoff_date`);
   const listPostsForDedupeStmt = db.prepare(`
     SELECT
       id,
@@ -154,25 +159,25 @@ export function createPostsRepository(dbPath = 'data.db') {
       dedupe_key,
       contact_phone,
       contact_username
-    FROM posts
+    FROM ${table}
     ORDER BY date DESC, id DESC
   `);
   const findMissingDedupeKeyStmt = db.prepare(`
     SELECT
       id,
       COALESCE(description, title, '') AS text
-    FROM posts
+    FROM ${table}
     WHERE dedupe_key IS NULL
        OR TRIM(dedupe_key) = ''
     ORDER BY id ASC
   `);
   const updateDedupeKeyStmt = db.prepare(`
-    UPDATE posts
+    UPDATE ${table}
     SET dedupe_key = @dedupe_key
     WHERE id = @id
   `);
   const updateStoredPhotosStmt = db.prepare(`
-    UPDATE posts
+    UPDATE ${table}
     SET
       photo_path = @photo_path,
       photo_paths = @photo_paths
@@ -201,7 +206,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       backend_last_error,
       photo_path,
       photo_paths
-    FROM posts
+    FROM ${table}
     WHERE source = @source
       AND msg_id = @msg_id
     LIMIT 1
@@ -228,13 +233,13 @@ export function createPostsRepository(dbPath = 'data.db') {
       backend_synced_at,
       backend_last_error,
       backend_sync_target
-    FROM posts
+    FROM ${table}
     WHERE backend_synced_at IS NULL
        OR backend_sync_target IS DISTINCT FROM @backend_sync_target
     ORDER BY date ASC, id ASC
   `);
   const markBackendSyncSuccessStmt = db.prepare(`
-    UPDATE posts
+    UPDATE ${table}
     SET
       backend_synced_at = @backend_synced_at,
       backend_last_error = NULL,
@@ -242,7 +247,7 @@ export function createPostsRepository(dbPath = 'data.db') {
     WHERE id = @id
   `);
   const markBackendSyncFailureStmt = db.prepare(`
-    UPDATE posts
+    UPDATE ${table}
     SET
       backend_synced_at = NULL,
       backend_last_error = @backend_last_error
@@ -250,7 +255,7 @@ export function createPostsRepository(dbPath = 'data.db') {
   `);
   const findDuplicateWithSenderStmt = db.prepare(`
     SELECT 1
-    FROM posts
+    FROM ${table}
     WHERE source = @source
       AND sender_id = @sender_id
       AND content_hash = @content_hash
@@ -259,7 +264,7 @@ export function createPostsRepository(dbPath = 'data.db') {
   `);
   const findDuplicateWithoutSenderStmt = db.prepare(`
     SELECT 1
-    FROM posts
+    FROM ${table}
     WHERE source = @source
       AND sender_id IS NULL
       AND content_hash = @content_hash
@@ -268,7 +273,7 @@ export function createPostsRepository(dbPath = 'data.db') {
   `);
   const findFuzzyDuplicateWithSenderStmt = db.prepare(`
     SELECT 1
-    FROM posts
+    FROM ${table}
     WHERE sender_id = @sender_id
       AND dedupe_key = @dedupe_key
       AND msg_id <> @msg_id
@@ -276,7 +281,7 @@ export function createPostsRepository(dbPath = 'data.db') {
   `);
   const findFuzzyDuplicateWithPhoneStmt = db.prepare(`
     SELECT 1
-    FROM posts
+    FROM ${table}
     WHERE contact_phone = @contact_phone
       AND dedupe_key = @dedupe_key
       AND msg_id <> @msg_id
@@ -343,7 +348,7 @@ export function createPostsRepository(dbPath = 'data.db') {
       if (!Array.isArray(ids) || ids.length === 0) return 0;
 
       const placeholders = ids.map(() => '?').join(', ');
-      const stmt = db.prepare(`DELETE FROM posts WHERE id IN (${placeholders})`);
+      const stmt = db.prepare(`DELETE FROM ${table} WHERE id IN (${placeholders})`);
       return stmt.run(...ids).changes;
     },
     hasDuplicateByContent({ source, msgId, senderId, contentHash }) {
@@ -391,12 +396,12 @@ export function createPostsRepository(dbPath = 'data.db') {
   };
 }
 
-function ensureSchema(db) {
+function ensureSchema(db, table) {
   // noinspection SqlDialectInspection,SqlNoDataSourceInspection
-  const columns = new Set(db.prepare('PRAGMA table_info(posts)').all().map((row) => row.name));
+  const columns = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
   const addColumnIfMissing = (columnName, sqlType) => {
     if (!columns.has(columnName)) {
-      db.exec(`ALTER TABLE posts ADD COLUMN ${columnName} ${sqlType}`);
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnName} ${sqlType}`);
       columns.add(columnName);
     }
   };
