@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 
 function parseErrorMessage(payload) {
   if (!payload) return 'Request failed';
@@ -49,12 +50,85 @@ function resolveMimeType(filePath) {
   return 'image/jpeg';
 }
 
+function replaceExtension(fileName, ext) {
+  const baseName = String(fileName || '').trim();
+  if (!baseName) return `upload${ext}`;
+  return baseName.replace(/\.[^.]+$/, '') === baseName ? `${baseName}${ext}` : baseName.replace(/\.[^.]+$/, ext);
+}
+
+function canOptimizeMimeType(mimeType) {
+  return ['image/jpeg', 'image/png', 'image/webp', 'image/heic'].includes(String(mimeType || '').trim().toLowerCase());
+}
+
+async function preparePhotoForUpload({
+  photoPath,
+  fileName,
+  mimeType,
+  maxDimension,
+  quality,
+  optimizationEnabled,
+}) {
+  const originalBuffer = fs.readFileSync(photoPath);
+  const originalSize = originalBuffer.byteLength;
+  const fallback = {
+    fileName,
+    mimeType,
+    fileBuffer: originalBuffer,
+    optimized: false,
+    originalSize,
+    uploadSize: originalSize,
+  };
+
+  if (!optimizationEnabled || !canOptimizeMimeType(mimeType)) {
+    return fallback;
+  }
+
+  try {
+    const metadata = await sharp(originalBuffer, { failOn: 'none' }).metadata();
+    if (!metadata.width && !metadata.height) {
+      return fallback;
+    }
+
+    const optimizedBuffer = await sharp(originalBuffer, { failOn: 'none' })
+      .rotate()
+      .resize({
+        width: maxDimension,
+        height: maxDimension,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({
+        quality,
+        effort: 4,
+      })
+      .toBuffer();
+
+    if (!optimizedBuffer || optimizedBuffer.byteLength >= originalSize) {
+      return fallback;
+    }
+
+    return {
+      fileName: replaceExtension(fileName, '.webp'),
+      mimeType: 'image/webp',
+      fileBuffer: optimizedBuffer,
+      optimized: true,
+      originalSize,
+      uploadSize: optimizedBuffer.byteLength,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 export function createMediaUploader(config) {
   const endpoint = String(config?.postApiUrl || '').trim();
   const accountId = Number(config?.postApiAccountId || 0);
   const timeoutMs = Number(config?.postApiTimeoutMs || 15000);
   const publicBaseUrl = String(config?.s3PublicBaseUrl || '').trim().replace(/\/+$/, '');
   const maxSizeBytes = Number(config?.s3MaxUploadBytes || 10485760);
+  const imageOptimizationEnabled = Boolean(config?.s3ImageOptimizationEnabled);
+  const imageMaxDimension = Number(config?.s3ImageMaxDimension || 2000);
+  const imageQuality = Number(config?.s3ImageQuality || 84);
 
   async function callApi({ domain, event, params }) {
     const controller = new AbortController();
@@ -135,21 +209,29 @@ export function createMediaUploader(config) {
     if (stat.size <= 0) {
       throw new Error(`Photo file is empty: ${normalizedPath}`);
     }
-    if (stat.size > maxSizeBytes) {
-      throw new Error(`Photo file is too large (${stat.size} bytes)`);
+
+    const preparedFile = await preparePhotoForUpload({
+      photoPath: normalizedPath,
+      fileName: path.basename(normalizedPath),
+      mimeType: resolveMimeType(normalizedPath),
+      maxDimension: imageMaxDimension,
+      quality: imageQuality,
+      optimizationEnabled: imageOptimizationEnabled,
+    });
+
+    if (preparedFile.uploadSize > maxSizeBytes) {
+      throw new Error(`Photo file is too large after optimization (${preparedFile.uploadSize} bytes)`);
     }
 
-    const fileName = path.basename(normalizedPath);
-    const mimeType = resolveMimeType(normalizedPath);
     const init = await callApi({
       domain: 'media',
       event: 'initPhotoUpload',
       params: {
         accountId,
         entityType: 'listing',
-        mimeType,
-        byteSize: stat.size,
-        originalName: fileName,
+        mimeType: preparedFile.mimeType,
+        byteSize: preparedFile.uploadSize,
+        originalName: preparedFile.fileName,
       },
     });
 
@@ -157,13 +239,12 @@ export function createMediaUploader(config) {
       throw new Error('Invalid upload payload');
     }
 
-    const fileBuffer = fs.readFileSync(normalizedPath);
     await uploadFileToS3({
       uploadUrl: init.upload.url,
       fields: init.upload.fields,
-      fileName,
-      mimeType,
-      fileBuffer,
+      fileName: preparedFile.fileName,
+      mimeType: preparedFile.mimeType,
+      fileBuffer: preparedFile.fileBuffer,
     });
 
     let photoUrl = normalizePhotoReference(init.photoUrl, publicBaseUrl);

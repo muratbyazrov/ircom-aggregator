@@ -37,6 +37,30 @@ function normalizeSenderId(senderId) {
   return null;
 }
 
+function normalizeTelegramMessageDate(dateValue) {
+  if (dateValue === null || dateValue === undefined) return null;
+
+  if (dateValue instanceof Date) {
+    return Number.isNaN(dateValue.getTime()) ? null : dateValue.toISOString();
+  }
+
+  if (typeof dateValue === 'number' && Number.isFinite(dateValue)) {
+    const normalizedDate = new Date(dateValue * 1000);
+    return Number.isNaN(normalizedDate.getTime()) ? null : normalizedDate.toISOString();
+  }
+
+  if (typeof dateValue === 'bigint') {
+    const normalizedDate = new Date(Number(dateValue) * 1000);
+    return Number.isNaN(normalizedDate.getTime()) ? null : normalizedDate.toISOString();
+  }
+
+  const text = String(dateValue || '').trim();
+  if (!text) return null;
+
+  const parsedDate = new Date(text);
+  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate.toISOString();
+}
+
 function hasVisualMedia(message) {
   const hasPhoto = Boolean(message?.photo);
   const hasImageDoc = String(message?.media?.document?.mimeType || '').startsWith('image/');
@@ -597,6 +621,7 @@ export async function runApp() {
       let skippedAsReply = 0;
       let skippedByFilter = 0;
       let skippedAsDuplicate = 0;
+      let skippedWithoutDate = 0;
       let photosSaved = 0;
       let postedToApi = 0;
       let postApiFailed = 0;
@@ -634,7 +659,12 @@ export async function runApp() {
           primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
         );
         const structured = extractStructuredData(text, { kind: config.postApiKind });
-        const postDateIso = primaryMessage.date?.toISOString?.() || new Date().toISOString();
+        const postDateIso = normalizeTelegramMessageDate(primaryMessage?.date);
+        if (!postDateIso) {
+          skippedWithoutDate++;
+          console.warn(`Skip ${source}/${primaryMessage?.id}: message date is missing or invalid`);
+          continue;
+        }
         const contentHash = buildContentHash(text);
         const dedupeKey = buildDuplicateFingerprint(text);
 
@@ -756,7 +786,7 @@ export async function runApp() {
 
       totalSaved += saved;
       console.log(
-        `Scanned: ${scanned} | Saved: ${saved} | Replies: ${skippedAsReply} | Reposts: ${skippedAsRepost} | Duplicates: ${skippedAsDuplicate} | Skipped by filter: ${skippedByFilter} | Photos: ${photosSaved} | API photos uploaded: ${uploadedPhotosToApi} | API photo upload failed: ${uploadPhotosFailed} | API posted: ${postedToApi} | API failed: ${postApiFailed}`
+        `Scanned: ${scanned} | Saved: ${saved} | Replies: ${skippedAsReply} | Reposts: ${skippedAsRepost} | Duplicates: ${skippedAsDuplicate} | Skipped by filter: ${skippedByFilter} | Skipped without date: ${skippedWithoutDate} | Photos: ${photosSaved} | API photos uploaded: ${uploadedPhotosToApi} | API photo upload failed: ${uploadPhotosFailed} | API posted: ${postedToApi} | API failed: ${postApiFailed}`
       );
     }
 

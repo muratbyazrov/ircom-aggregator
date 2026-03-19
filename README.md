@@ -38,6 +38,9 @@ npm start
 - `TG_RETENTION_DAYS`: TTL in days for old aggregator records; on startup removes expired local posts and imported backend listings
 - `TG_S3_PUBLIC_BASE_URL`: optional public base URL for photo URL normalization
 - `TG_S3_MAX_UPLOAD_BYTES`: max upload size (bytes) for one image (default `10485760`)
+- `TG_S3_IMAGE_OPTIMIZATION_ENABLED`: optimize images before S3 upload (`true` by default)
+- `TG_S3_IMAGE_MAX_DIMENSION`: max width/height during optimization (default `2000`)
+- `TG_S3_IMAGE_QUALITY`: lossy WebP quality used for upload optimization (default `84`)
 
 ## Stored fields (`posts`)
 

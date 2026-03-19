@@ -350,9 +350,13 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
       const hasDecimalTail = /\d[.,]\d{1,2}$/.test(bareToken);
       if (!allowBareNumber && !hasThousandsGrouping) continue;
 
-      const bareValue = parseNumericPrice(bareToken, '');
-      if (bareValue === null) continue;
       if (hasDecimalTail && !hasThousandsGrouping) continue;
+
+      let bareValue = parseNumericPrice(bareToken, '');
+      if (bareValue === null && allowBareNumber && /^\d{2,3}$/.test(bareToken)) {
+        bareValue = Number(bareToken);
+      }
+      if (bareValue === null) continue;
 
       if (hasThousandsGrouping) {
         if (isSingleThousandsGroupToken(bareToken)) {

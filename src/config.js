@@ -106,6 +106,9 @@ export function loadConfig() {
     retentionDays: Number(process.env.TG_RETENTION_DAYS || 0),
     s3PublicBaseUrl: String(process.env.TG_S3_PUBLIC_BASE_URL || '').trim(),
     s3MaxUploadBytes: Number(process.env.TG_S3_MAX_UPLOAD_BYTES || 10485760),
+    s3ImageOptimizationEnabled: parseBool(process.env.TG_S3_IMAGE_OPTIMIZATION_ENABLED, true),
+    s3ImageMaxDimension: Number(process.env.TG_S3_IMAGE_MAX_DIMENSION || 2000),
+    s3ImageQuality: Number(process.env.TG_S3_IMAGE_QUALITY || 84),
   };
 
   validateConfig(config);
@@ -158,6 +161,12 @@ function validateConfig(config) {
     }
     if (!Number.isFinite(config.s3MaxUploadBytes) || config.s3MaxUploadBytes <= 0) {
       throw new Error('Invalid TG_S3_MAX_UPLOAD_BYTES in .env. Expected a positive number.');
+    }
+    if (!Number.isInteger(config.s3ImageMaxDimension) || config.s3ImageMaxDimension <= 0) {
+      throw new Error('Invalid TG_S3_IMAGE_MAX_DIMENSION in .env. Expected a positive integer.');
+    }
+    if (!Number.isInteger(config.s3ImageQuality) || config.s3ImageQuality < 1 || config.s3ImageQuality > 100) {
+      throw new Error('Invalid TG_S3_IMAGE_QUALITY in .env. Expected an integer from 1 to 100.');
     }
   }
 }

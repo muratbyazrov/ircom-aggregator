@@ -17,6 +17,7 @@
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
     "input": "^1.0.1",
+    "sharp": "^0.34.5",
     "telegram": "^2.26.22"
   },
   "devDependencies": {
