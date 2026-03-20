@@ -2,4 +2,6 @@ node_modules/
 media/
 .idea/
 .env
+.env.*
+!.env.*.example
 data.db

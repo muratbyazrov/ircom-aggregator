@@ -140,6 +140,23 @@ function logTaxiSkip({ source, msgId, reason, text }) {
   console.log(`Skip taxi ${source}/${msgId}: ${reason}${suffix}`);
 }
 
+function recordTaxiSkip({ config, stats, source, msgId, reason, text }) {
+  if (config?.pipelineMode !== 'taxi') return;
+  stats[reason] = Number(stats[reason] || 0) + 1;
+  if (config?.taxiVerboseSkips) {
+    logTaxiSkip({ source, msgId, reason, text });
+  }
+}
+
+function formatTaxiSkipSummary(stats) {
+  const entries = Object.entries(stats || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort((left, right) => right[1] - left[1]);
+
+  if (entries.length === 0) return '';
+  return entries.map(([reason, count]) => `${reason}: ${count}`).join(' | ');
+}
+
 function splitMultiValueField(value) {
   return String(value || '')
     .split(',')
@@ -934,6 +951,9 @@ export async function runApp() {
     }
 
     console.log(`\nSources configured: ${config.sources.length}`);
+    if (config.loadedEnvFiles.length > 0) {
+      console.log(`Env files: ${config.loadedEnvFiles.map((filePath) => filePath.split('/').pop()).join(', ')}`);
+    }
     console.log(
       `Pipeline mode: ${config.pipelineMode} -> table ${storageTableName}`
         + (config.postApiEnabled
@@ -945,6 +965,13 @@ export async function runApp() {
         ? (config.pipelineMode === 'taxi' ? 'only taxi-like posts' : 'only marketplace-like posts')
         : 'all posts'}`
     );
+    if (config.pipelineMode === 'taxi') {
+      console.log(
+        `Taxi skip logs: ${config.taxiVerboseSkips
+          ? 'verbose per-message output enabled'
+          : 'summary only (set TG_TAXI_VERBOSE_SKIPS=true for per-message details)'}`
+      );
+    }
     if (config.onlyAds && config.pipelineMode !== 'taxi') {
       console.log(`Ad keywords: ${config.adKeywords.join(', ')}`);
     }
@@ -972,6 +999,7 @@ export async function runApp() {
       let postApiFailed = 0;
       let uploadedPhotosToApi = 0;
       let uploadPhotosFailed = 0;
+      const taxiSkipStats = {};
 
       const fetchedMessages = [];
       for await (const message of client.iterMessages(entity, { limit: config.fetchLimit })) {
@@ -995,28 +1023,22 @@ export async function runApp() {
 
         if (!text && !hasAnyVisualMedia) continue;
         if (isReply) {
-          if (config.pipelineMode === 'taxi') {
-            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'reply', text });
-          }
+          recordTaxiSkip({ config, stats: taxiSkipStats, source, msgId: primaryMessage?.id, reason: 'reply', text });
           skippedAsReply++;
           continue;
         }
         if (isRepost) {
-          if (config.pipelineMode === 'taxi') {
-            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'repost', text });
-          }
+          recordTaxiSkip({ config, stats: taxiSkipStats, source, msgId: primaryMessage?.id, reason: 'repost', text });
           skippedAsRepost++;
           continue;
         }
         if (config.onlyAds && (!text || !shouldKeepTextByFilter(text, config))) {
-          if (config.pipelineMode === 'taxi') {
-            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'filter', text });
-          }
+          recordTaxiSkip({ config, stats: taxiSkipStats, source, msgId: primaryMessage?.id, reason: 'filter', text });
           skippedByFilter++;
           continue;
         }
         if (config.pipelineMode === 'taxi' && taxiExpired) {
-          logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'expired', text });
+          recordTaxiSkip({ config, stats: taxiSkipStats, source, msgId: primaryMessage?.id, reason: 'expired', text });
           skippedByFilter++;
           continue;
         }
@@ -1046,9 +1068,14 @@ export async function runApp() {
           senderId,
           contentHash,
         })) {
-          if (config.pipelineMode === 'taxi') {
-            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'duplicate-content', text });
-          }
+          recordTaxiSkip({
+            config,
+            stats: taxiSkipStats,
+            source,
+            msgId: primaryMessage?.id,
+            reason: 'duplicate-content',
+            text,
+          });
           skippedAsDuplicate++;
           continue;
         }
@@ -1058,9 +1085,14 @@ export async function runApp() {
           contactPhone: structured.contactPhone,
           dedupeKey,
         })) {
-          if (config.pipelineMode === 'taxi') {
-            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'duplicate-fuzzy', text });
-          }
+          recordTaxiSkip({
+            config,
+            stats: taxiSkipStats,
+            source,
+            msgId: primaryMessage?.id,
+            reason: 'duplicate-fuzzy',
+            text,
+          });
           skippedAsDuplicate++;
           continue;
         }
@@ -1072,9 +1104,14 @@ export async function runApp() {
             .at(-1);
 
           if (latestExistingDuplicate && comparePostsByRecency(latestExistingDuplicate, incomingPost) >= 0) {
-            if (config.pipelineMode === 'taxi') {
-              logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'duplicate-index', text });
-            }
+            recordTaxiSkip({
+              config,
+              stats: taxiSkipStats,
+              source,
+              msgId: primaryMessage?.id,
+              reason: 'duplicate-index',
+              text,
+            });
             skippedAsDuplicate++;
             continue;
           }
@@ -1171,6 +1208,10 @@ export async function runApp() {
       console.log(
         `Scanned: ${scanned} | Saved: ${saved} | Replies: ${skippedAsReply} | Reposts: ${skippedAsRepost} | Duplicates: ${skippedAsDuplicate} | Skipped by filter: ${skippedByFilter} | Skipped without date: ${skippedWithoutDate} | Photos: ${photosSaved} | API photos uploaded: ${uploadedPhotosToApi} | API photo upload failed: ${uploadPhotosFailed} | API posted: ${postedToApi} | API failed: ${postApiFailed}`
       );
+      const taxiSkipSummary = formatTaxiSkipSummary(taxiSkipStats);
+      if (taxiSkipSummary) {
+        console.log(`Taxi skip summary: ${taxiSkipSummary}`);
+      }
     }
 
     console.log(`\n✅ Done. Saved total: ${totalSaved}. Posts are in data.db`);

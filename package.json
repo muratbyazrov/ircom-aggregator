@@ -6,6 +6,9 @@
   "scripts": {
     "test": "node --test",
     "start": "node index.js",
+    "ads": "node index.js --mode=ads",
+    "services": "node index.js --mode=services",
+    "taxi": "node index.js --mode=taxi",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

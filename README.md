@@ -21,6 +21,31 @@ Telegram aggregator for marketplace-like posts with structured extraction into S
 npm start
 ```
 
+Mode shortcuts:
+
+```bash
+npm run ads
+npm run services
+npm run taxi
+```
+
+Mode launch order for env files:
+
+- `.env`: base/shared settings and secrets
+- `.env.ads`, `.env.services`, `.env.taxi`: optional mode-specific overrides loaded on top of `.env`
+
+Example use:
+
+1. Keep Telegram auth and shared keys in `.env`
+2. Put per-mode `TG_SOURCES`, `TG_PIPELINE_MODE`, backend account/category overrides into `.env.ads`, `.env.services`, `.env.taxi`
+3. Start the needed pipeline with `npm run ads`, `npm run services`, or `npm run taxi`
+
+You can also run a custom env overlay directly:
+
+```bash
+node index.js --mode=ads --env-file=.env.customer-a
+```
+
 ## Main `.env` flags
 
 - `TG_SOURCES`: comma-separated list (`@channel`, `https://t.me/...`)
@@ -31,6 +56,7 @@ npm start
 - `TG_SAVE_PHOTOS`: `true/false` media download
 - `TG_PHOTOS_DIR`: media output folder
 - `TG_CLEAR_BEFORE_RUN`: clear only the active pipeline table before each run (`posts`, `service_posts` or `taxi_posts`)
+- `TG_TAXI_VERBOSE_SKIPS`: print one log line for every skipped taxi post (`false` by default; otherwise taxi mode prints only per-source skip summaries)
 - `TG_POST_API_ENABLED`: `true/false` send parsed posts to backend API
   - `TG_POST_API_URL`: backend endpoint (same as frontend `VITE_IRCOM_API_URL`)
   - `TG_POST_API_ACCOUNT_ID`: account id used in `createListing` / `createTaxiOffer` payload

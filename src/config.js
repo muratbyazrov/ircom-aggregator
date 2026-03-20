@@ -1,4 +1,7 @@
-import 'dotenv/config';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import { parse as parseDotenv } from 'dotenv';
 
 const DEFAULT_AD_KEYWORDS = [
   'продам',
@@ -19,6 +22,25 @@ const DEFAULT_AD_KEYWORDS = [
   'kgs',
   'usd',
 ];
+
+function parseCliArgValue(argv, flagName) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = String(argv[index] || '').trim();
+    if (!arg) continue;
+
+    if (arg === flagName) {
+      const nextValue = String(argv[index + 1] || '').trim();
+      return nextValue || null;
+    }
+
+    if (arg.startsWith(`${flagName}=`)) {
+      const value = arg.slice(flagName.length + 1).trim();
+      return value || null;
+    }
+  }
+
+  return null;
+}
 
 function parseList(value) {
   return String(value || '')
@@ -52,6 +74,64 @@ function parsePipelineMode(value) {
   return normalized;
 }
 
+function parseRuntimeOptions(argv, env) {
+  const cliMode = parsePipelineMode(parseCliArgValue(argv, '--mode'));
+  const cliEnvFile = parseCliArgValue(argv, '--env-file');
+  const envFile = String(env?.TG_ENV_FILE || cliEnvFile || '').trim();
+
+  return {
+    mode: cliMode,
+    envFile,
+  };
+}
+
+function resolveEnvFilePath(filePath, cwd) {
+  if (!filePath) return null;
+  return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+}
+
+function applyEnvFile(filePath, env, { override }) {
+  if (!filePath || !existsSync(filePath)) return false;
+
+  const parsed = parseDotenv(readFileSync(filePath));
+  for (const [key, value] of Object.entries(parsed)) {
+    if (override || !(key in env)) {
+      env[key] = value;
+    }
+  }
+
+  return true;
+}
+
+function loadRuntimeEnv({ env, argv, cwd }) {
+  const runtimeOptions = parseRuntimeOptions(argv, env);
+  const loadedFiles = [];
+
+  const baseEnvPath = path.resolve(cwd, '.env');
+  if (applyEnvFile(baseEnvPath, env, { override: false })) {
+    loadedFiles.push(baseEnvPath);
+  }
+
+  if (runtimeOptions.mode) {
+    const modeEnvPath = path.resolve(cwd, `.env.${runtimeOptions.mode}`);
+    if (applyEnvFile(modeEnvPath, env, { override: true })) {
+      loadedFiles.push(modeEnvPath);
+    }
+  }
+
+  const explicitEnvPath = resolveEnvFilePath(runtimeOptions.envFile, cwd);
+  if (explicitEnvPath && !loadedFiles.includes(explicitEnvPath)) {
+    if (applyEnvFile(explicitEnvPath, env, { override: true })) {
+      loadedFiles.push(explicitEnvPath);
+    }
+  }
+
+  return {
+    ...runtimeOptions,
+    loadedFiles,
+  };
+}
+
 function resolvePipelineMode(rawMode, rawKind) {
   const parsedMode = parsePipelineMode(rawMode);
   if (parsedMode) return parsedMode;
@@ -69,19 +149,29 @@ function normalizeSource(rawSource) {
   return src;
 }
 
-function resolveSources() {
-  return parseList(process.env.TG_SOURCES).map(normalizeSource).filter(Boolean);
+function resolveSources(env) {
+  return parseList(env.TG_SOURCES).map(normalizeSource).filter(Boolean);
 }
 
-function resolveAdKeywords() {
-  const envKeywords = parseList(process.env.TG_AD_KEYWORDS).map((kw) => kw.toLowerCase());
+function resolveAdKeywords(env) {
+  const envKeywords = parseList(env.TG_AD_KEYWORDS).map((kw) => kw.toLowerCase());
   return envKeywords.length > 0 ? envKeywords : DEFAULT_AD_KEYWORDS;
 }
 
-export function loadConfig() {
-  const explicitPostApiKind = parsePostApiKind(process.env.TG_POST_API_KIND);
-  const pipelineMode = resolvePipelineMode(process.env.TG_PIPELINE_MODE, process.env.TG_POST_API_KIND);
-  const postApiRequested = parseBool(process.env.TG_POST_API_ENABLED, false);
+export function loadConfig(options = {}) {
+  const env = options.env || process.env;
+  const argv = Array.isArray(options.argv) ? options.argv : process.argv.slice(2);
+  const cwd = options.cwd || process.cwd();
+  const shouldLoadEnvFiles = options.loadEnvFiles !== false;
+
+  const runtimeOptions = shouldLoadEnvFiles
+    ? loadRuntimeEnv({ env, argv, cwd })
+    : parseRuntimeOptions(argv, env);
+
+  const rawPipelineMode = runtimeOptions.mode || env.TG_PIPELINE_MODE;
+  const explicitPostApiKind = parsePostApiKind(env.TG_POST_API_KIND);
+  const pipelineMode = resolvePipelineMode(rawPipelineMode, env.TG_POST_API_KIND);
+  const postApiRequested = parseBool(env.TG_POST_API_ENABLED, false);
   const derivedPostApiKind = pipelineMode === 'services'
     ? 2
     : pipelineMode === 'ads'
@@ -89,33 +179,36 @@ export function loadConfig() {
       : null;
 
   const config = {
-    apiId: Number(process.env.TG_API_ID),
-    apiHash: process.env.TG_API_HASH,
-    defaultPhoneNumber: String(process.env.TG_PHONE_NUMBER || '').trim(),
-    forceSms: parseBool(process.env.TG_FORCE_SMS, false),
-    fetchLimit: Number(process.env.TG_FETCH_LIMIT || 100),
-    onlyAds: parseBool(process.env.TG_ONLY_ADS, true),
-    savePhotos: parseBool(process.env.TG_SAVE_PHOTOS, true),
-    clearBeforeRun: parseBool(process.env.TG_CLEAR_BEFORE_RUN, false),
-    photosDir: String(process.env.TG_PHOTOS_DIR || 'media').trim(),
-    session: process.env.TG_SESSION || '',
+    apiId: Number(env.TG_API_ID),
+    apiHash: env.TG_API_HASH,
+    defaultPhoneNumber: String(env.TG_PHONE_NUMBER || '').trim(),
+    forceSms: parseBool(env.TG_FORCE_SMS, false),
+    fetchLimit: Number(env.TG_FETCH_LIMIT || 100),
+    onlyAds: parseBool(env.TG_ONLY_ADS, true),
+    savePhotos: parseBool(env.TG_SAVE_PHOTOS, true),
+    clearBeforeRun: parseBool(env.TG_CLEAR_BEFORE_RUN, false),
+    photosDir: String(env.TG_PHOTOS_DIR || 'media').trim(),
+    session: env.TG_SESSION || '',
     pipelineMode,
-    sources: resolveSources(),
-    adKeywords: resolveAdKeywords(),
+    taxiVerboseSkips: parseBool(env.TG_TAXI_VERBOSE_SKIPS, false),
+    sources: resolveSources(env),
+    adKeywords: resolveAdKeywords(env),
     postApiRequested,
     postApiEnabled: postApiRequested,
-    postApiUrl: String(process.env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
-    postApiAccountId: Number(process.env.TG_POST_API_ACCOUNT_ID || 0),
+    postApiUrl: String(env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
+    postApiAccountId: Number(env.TG_POST_API_ACCOUNT_ID || 0),
     postApiKind: explicitPostApiKind || derivedPostApiKind,
-    postApiDefaultCategory: String(process.env.TG_POST_API_DEFAULT_CATEGORY || 'Другое').trim(),
-    postApiDefaultPrice: Number(process.env.TG_POST_API_DEFAULT_PRICE || 1),
-    postApiTimeoutMs: Number(process.env.TG_POST_API_TIMEOUT_MS || 15000),
-    retentionDays: Number(process.env.TG_RETENTION_DAYS || 0),
-    s3PublicBaseUrl: String(process.env.TG_S3_PUBLIC_BASE_URL || '').trim(),
-    s3MaxUploadBytes: Number(process.env.TG_S3_MAX_UPLOAD_BYTES || 10485760),
-    s3ImageOptimizationEnabled: parseBool(process.env.TG_S3_IMAGE_OPTIMIZATION_ENABLED, true),
-    s3ImageMaxDimension: Number(process.env.TG_S3_IMAGE_MAX_DIMENSION || 2000),
-    s3ImageQuality: Number(process.env.TG_S3_IMAGE_QUALITY || 84),
+    postApiDefaultCategory: String(env.TG_POST_API_DEFAULT_CATEGORY || 'Другое').trim(),
+    postApiDefaultPrice: Number(env.TG_POST_API_DEFAULT_PRICE || 1),
+    postApiTimeoutMs: Number(env.TG_POST_API_TIMEOUT_MS || 15000),
+    retentionDays: Number(env.TG_RETENTION_DAYS || 0),
+    s3PublicBaseUrl: String(env.TG_S3_PUBLIC_BASE_URL || '').trim(),
+    s3MaxUploadBytes: Number(env.TG_S3_MAX_UPLOAD_BYTES || 10485760),
+    s3ImageOptimizationEnabled: parseBool(env.TG_S3_IMAGE_OPTIMIZATION_ENABLED, true),
+    s3ImageMaxDimension: Number(env.TG_S3_IMAGE_MAX_DIMENSION || 2000),
+    s3ImageQuality: Number(env.TG_S3_IMAGE_QUALITY || 84),
+    runtimeMode: runtimeOptions.mode || null,
+    loadedEnvFiles: runtimeOptions.loadedFiles || [],
   };
 
   validateConfig(config);
