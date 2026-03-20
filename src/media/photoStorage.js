@@ -13,6 +13,14 @@ export function createPhotoStorage({ enabled, photosDir }) {
       const fileName = `${sanitizeForFilename(source)}_${msgId}.${getPhotoExtension(message)}`;
       const fullPath = path.join(photosDir, fileName);
 
+      // Guard against path traversal — sanitizeForFilename strips most unsafe chars,
+      // but resolve + prefix check is an extra safety net.
+      const resolvedPath = path.resolve(fullPath);
+      const resolvedDir = path.resolve(photosDir);
+      if (!resolvedPath.startsWith(resolvedDir + path.sep)) {
+        throw new Error(`Unsafe photo path resolved outside photos directory: ${resolvedPath}`);
+      }
+
       const media = await client.downloadMedia(message, {});
       if (!media) return null;
 
