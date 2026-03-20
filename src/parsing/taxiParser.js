@@ -152,11 +152,13 @@ function parseReferenceDate(referenceDate) {
   }
 
   if (typeof referenceDate === 'number' && Number.isFinite(referenceDate)) {
+    // Telegram API returns message.date as Unix timestamp in seconds, not milliseconds.
     const normalized = new Date(referenceDate * 1000);
     return Number.isNaN(normalized.getTime()) ? new Date() : normalized;
   }
 
   if (typeof referenceDate === 'bigint') {
+    // Same as above — bigint form of Unix seconds timestamp.
     const normalized = new Date(Number(referenceDate) * 1000);
     return Number.isNaN(normalized.getTime()) ? new Date() : normalized;
   }

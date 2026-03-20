@@ -782,10 +782,14 @@ function detectCategory(text, options = {}) {
     return 'transport';
   }
 
+  // 'other' is the fallback category and intentionally has many broad keywords.
+  // We score it separately so it only wins when no specific category matches at all —
+  // preventing it from drowning out more precise categories via keyword volume.
   let bestCategory = 'other';
   let bestScore = 0;
 
   for (const rule of categoryRules) {
+    if (rule.code === 'other') continue;
     let score = 0;
     for (const keyword of rule.keywords) {
       if (normalized.includes(keyword)) score += 1;

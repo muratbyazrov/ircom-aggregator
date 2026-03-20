@@ -304,9 +304,7 @@ export function createPostsRepository(dbPath = 'data.db', { tableName = 'posts' 
       permalink,
       backend_synced_at,
       backend_last_error,
-      backend_entity_id,
-      photo_path,
-      photo_paths
+      backend_sync_target
     FROM ${table}
     WHERE source = @source
       AND msg_id = @msg_id

@@ -746,8 +746,12 @@ export async function runApp() {
     }));
 
     const session = client.session.save();
-    console.log('\n✅ SESSION (скопируй в .env как TG_SESSION=...):\n');
-    console.log(session);
+    // Only print the session token when it's newly created or has changed,
+    // to avoid leaking it into logs on every run.
+    if (session && session !== config.session) {
+      console.log('\n✅ SESSION (скопируй в .env как TG_SESSION=...):\n');
+      console.log(session);
+    }
 
     if (config.clearBeforeRun) {
       if (config.postApiEnabled && config.pipelineMode === 'taxi') {
@@ -1130,9 +1134,10 @@ export async function runApp() {
           duplicateIndex.addPost(savedPost);
         }
 
+        let syncResult = null;
         if (config.postApiEnabled && savedPost) {
           try {
-            const syncResult = await syncPostToBackend({
+            syncResult = await syncPostToBackend({
               post: savedPost,
               config,
               db,
@@ -1152,8 +1157,8 @@ export async function runApp() {
           }
         }
 
-        const refreshedSavedPost = db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id });
-        const isBackendSynced = Boolean(refreshedSavedPost?.backend_synced_at || refreshedSavedPost?.backendSyncedAt);
+        // Use syncResult directly to avoid an extra DB round-trip.
+        const isBackendSynced = Boolean(syncResult?.synced);
         if (config.postApiEnabled && !config.savePhotos && photoPaths.length > 0 && isBackendSynced) {
           cleanupLocalPhotos(photoPaths);
         }
