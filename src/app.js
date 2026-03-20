@@ -370,6 +370,14 @@ function buildTaxiPayload(post, config) {
     description,
     phone,
     price: Number(reparsed.priceValue || post?.price_value || post?.priceValue || config.postApiDefaultPrice || 1),
+    importMeta: {
+      source: post?.source,
+      msgId: post?.msg_id ?? post?.msgId,
+      date: post?.date,
+      permalink: post?.permalink || null,
+      contentHash: post?.content_hash || post?.contentHash || null,
+      photoObjectKeys: [],
+    },
   };
 
   if (telegram) payload.telegram = telegram;
@@ -510,6 +518,9 @@ async function syncTaxiPostToBackend({ post, config, db, postApi, mediaUploader,
 
   if (uploadedPhotos.length > 0) {
     payload.carPhotos = uploadedPhotos.map((photo) => photo.photoUrl);
+    payload.importMeta.photoObjectKeys = uploadedPhotos
+      .map((photo) => String(photo?.objectKey || '').trim())
+      .filter(Boolean);
   }
 
   try {
