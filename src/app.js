@@ -12,6 +12,7 @@ import {
   extractStructuredData,
   buildContentHash,
   buildDuplicateFingerprint,
+  truncateTitle,
   FALLBACK_LISTING_CATEGORY_BY_CODE,
   FALLBACK_SERVICE_CATEGORY_BY_CODE,
 } from './parsing/adParser.js';
@@ -263,7 +264,7 @@ function buildListingPayload(post, config, categoryResolver) {
     kind: config.postApiKind,
     ...(resolvedCategory.categoryId ? { categoryId: resolvedCategory.categoryId } : {}),
     category: categoryName,
-    title: String(post?.title || '').trim() || 'Объявление',
+    title: truncateTitle(String(post?.title || '').trim() || 'Объявление', 50),
     description: String(post?.description || '').trim(),
     price: Number(post?.price_value || post?.priceValue) || config.postApiDefaultPrice || 1,
     ...(listingPhone ? { phone: listingPhone } : {}),

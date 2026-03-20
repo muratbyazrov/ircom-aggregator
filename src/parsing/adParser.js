@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-const MAX_TITLE_LENGTH = 60;
+const MAX_TITLE_LENGTH = 50;
 const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
 const TELEGRAM_MARKER_PATTERN = '(?:telegram|телеграм(?:м)?|телега|тг|tg)';
 const WHATSAPP_MARKER_PATTERN = '(?:wh(?:a)?ts?\\s*app|wats?\\s*app|ватсап|ватсапп|вацап|вацап|ваца|вац|вотсап|васап)';
@@ -148,6 +148,24 @@ export function buildContentHash(text) {
 
   if (!canonical) return null;
   return createHash('sha1').update(canonical, 'utf8').digest('hex');
+}
+
+export function truncateTitle(value, maxLength = MAX_TITLE_LENGTH) {
+  const raw = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!raw || raw.length <= maxLength) return raw;
+
+  const sentenceEnd = raw.slice(0, maxLength + 1).search(/[.!?;:](?:\s|$)/);
+  if (sentenceEnd > 10 && sentenceEnd <= maxLength) {
+    return raw.slice(0, sentenceEnd + 1).trim();
+  }
+
+  const cut = raw.slice(0, maxLength + 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace >= Math.floor(maxLength / 2)) {
+    return cut.slice(0, lastSpace).trim();
+  }
+
+  return raw.slice(0, maxLength).trim();
 }
 
 export function buildDuplicateFingerprint(text) {
