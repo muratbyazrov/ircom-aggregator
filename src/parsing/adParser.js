@@ -2,9 +2,12 @@ import { createHash } from 'node:crypto';
 
 const MAX_TITLE_LENGTH = 60;
 const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
+const TELEGRAM_MARKER_PATTERN = '(?:telegram|телеграм(?:м)?|телега|тг|tg)';
+const WHATSAPP_MARKER_PATTERN = '(?:wh(?:a)?ts?\\s*app|wats?\\s*app|ватсап|ватсапп|вацап|вацап|ваца|вац|вотсап|васап)';
 const PRICE_HINT_RE = /(цена|стоимость|продаю\s+за|за\s+\d|отдам|всего|итог|руб|₽|тыс|тысяч|торг|🍋|млн|мл)/i;
 const LISTING_INTENT_RE = /(продам|продаю|продается|продаётся|продажа|продажи|отдам|куплю|сдам|сдается|сдаётся|сниму|аренда|обмен|ваканси|ищу|ищем|требуетс|зарплат|резюме)/i;
 const SERVICE_INTENT_RE = /(услуг|оказываю|предлагаю услуги|на дому|с выездом|выезд|мастер на час|маникюр|педикюр|бров|ресниц|парикмахер|косметолог|сантехник|электрик|репетитор|курсы|обучен|уборк|клининг|шиномонтаж|автосервис|разработка сайтов|telegram-бот|telegram bot|телеграм-бот|чат-бот|бот для|бот на заказ|ремонт[а-я]* автостек|ремонт[а-я]* лобов|ремонт[а-я]* квартир|ремонт[а-я]* под ключ|демонтаж|монтаж|укладка кафеля)/i;
+const VALID_TELEGRAM_USERNAME_RE = /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/;
 
 const LISTING_CATEGORY_RULES = [
   { code: 'transport', name: 'Авто', keywords: ['авто', 'машин', 'автомоб', 'toyota', 'bmw', 'mercedes', 'lada', 'kia', 'hyundai', 'ваз', 'пробег', 'двигател', 'акпп', 'мкпп', 'vin', 'л/с', 'мотор', 'привод', 'механика', 'бампер'] },
@@ -547,29 +550,143 @@ function stripPhoneLikeNumbers(text) {
   return String(text || '').replace(PHONE_LIKE_RE, (match) => (normalizePhone(match) ? ' ' : match));
 }
 
+function buildContactMarkerRegex(pattern, flags = 'iu') {
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${pattern}(?![\\p{L}\\p{N}_])`, flags);
+}
+
+function hasContactMarker(text, pattern) {
+  return buildContactMarkerRegex(pattern, 'iu').test(String(text || ''));
+}
+
+function extractPhonesWithIndices(text) {
+  const normalized = String(text || '');
+  const result = [];
+
+  for (const match of normalized.matchAll(PHONE_LIKE_RE)) {
+    const phone = normalizePhone(match[0]);
+    const index = Number(match.index ?? -1);
+    if (!phone || index < 0) continue;
+    result.push({ phone, index });
+  }
+
+  return result;
+}
+
+function extractPhonesNearMarker(text, pattern, maxDistance = 48) {
+  const normalized = String(text || '');
+  const markerRegex = buildContactMarkerRegex(pattern, 'giu');
+  const markers = [...normalized.matchAll(markerRegex)].map((match) => ({
+    index: Number(match.index ?? -1),
+    length: match[0].length,
+  })).filter((entry) => entry.index >= 0);
+  if (markers.length === 0) return [];
+
+  const phones = extractPhonesWithIndices(normalized);
+  const taggedPhones = [];
+
+  for (const marker of markers) {
+    let best = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    const markerCenter = marker.index + Math.floor(marker.length / 2);
+
+    for (const phone of phones) {
+      const distance = Math.abs(phone.index - markerCenter);
+      if (distance > maxDistance || distance >= bestDistance) continue;
+      best = phone.phone;
+      bestDistance = distance;
+    }
+
+    if (best) taggedPhones.push(best);
+  }
+
+  return [...new Set(taggedPhones)];
+}
+
+function normalizeTelegramAlias(value) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/^@/, '')
+    .replace(/^[^@\p{L}\p{N}_-]+/gu, '')
+    .replace(/[^\p{L}\p{N}_-]+$/gu, '')
+    .trim();
+
+  if (!normalized || normalized.length < 2 || normalized.length > 32) return null;
+  if (/^\d{5,}$/.test(normalized)) return null;
+  if (/^(?:telegram|телеграм(?:м)?|телега|тг|tg|whatsapp|ватсап|вацап|вац|вотсап)$/iu.test(normalized)) return null;
+  if (/^(?:писать|пишите|звонить|звоните|желательно|номер|тел|телефон)$/iu.test(normalized)) return null;
+  return normalized;
+}
+
+function extractTelegramLabels(text) {
+  const normalized = String(text || '');
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const validUsernames = [];
+  const aliases = [];
+  const markerBeforeRe = new RegExp(`${TELEGRAM_MARKER_PATTERN}\\s*[:\\-]?[\\s/|,;]*@?([\\p{L}\\p{N}_-]{2,32})\\b`, 'iu');
+  const markerAfterRe = new RegExp(`@?([\\p{L}\\p{N}_-]{2,32})\\s*(?:[|/,;:-]+\\s*)?${TELEGRAM_MARKER_PATTERN}\\b`, 'iu');
+
+  for (const line of lines) {
+    const beforeMatch = line.match(markerBeforeRe);
+    const afterMatch = line.match(markerAfterRe);
+    const candidate = normalizeTelegramAlias(beforeMatch?.[1] || afterMatch?.[1] || '');
+    if (!candidate) continue;
+
+    if (VALID_TELEGRAM_USERNAME_RE.test(candidate)) {
+      validUsernames.push(candidate);
+    } else {
+      aliases.push(candidate);
+    }
+  }
+
+  return {
+    usernames: [...new Set(validUsernames)],
+    aliases: [...new Set(aliases)],
+  };
+}
+
 function extractContacts(text) {
   const normalized = String(text || '');
 
-  const phoneMatches = normalized.match(PHONE_LIKE_RE) || [];
-  const phones = phoneMatches
-    .map((phone) => normalizePhone(phone))
-    .filter(Boolean);
+  const phoneMatches = extractPhonesWithIndices(normalized);
+  const phones = phoneMatches.map((entry) => entry.phone);
   const uniquePhones = [...new Set(phones)];
 
   const tgAtMatches = normalized.match(/(?:^|\s)@([a-zA-Z][a-zA-Z0-9_]{4,31})\b/g) || [];
   const tgLinkMatches = normalized.match(/https?:\/\/t\.me\/([a-zA-Z0-9_]{4,32})/gi) || [];
+  const telegramLabels = extractTelegramLabels(normalized);
   const usernames = [
     ...tgAtMatches.map((entry) => entry.trim().replace(/^@/, '')),
     ...tgLinkMatches
       .map((entry) => entry.match(/t\.me\/([a-zA-Z0-9_]{4,32})/i)?.[1] || '')
       .filter(Boolean),
+    ...telegramLabels.usernames,
   ].filter(Boolean);
   const uniqueUsernames = [...new Set(usernames)];
+  const uniqueTelegramAliases = telegramLabels.aliases.filter((alias) => !uniqueUsernames.includes(alias));
+  const hasTelegramMarker = hasContactMarker(normalized, TELEGRAM_MARKER_PATTERN);
+  const hasWhatsappMarker = hasContactMarker(normalized, WHATSAPP_MARKER_PATTERN);
+  const telegramPhones = extractPhonesNearMarker(normalized, TELEGRAM_MARKER_PATTERN);
+  const whatsappPhones = extractPhonesNearMarker(normalized, WHATSAPP_MARKER_PATTERN);
 
   const contactParts = [
     ...uniquePhones.map((phone) => `phone:${phone}`),
     ...uniqueUsernames.map((username) => `tg:@${username}`),
+    ...uniqueTelegramAliases.map((alias) => `tg-alias:${alias}`),
+    ...telegramPhones
+      .filter((phone) => !uniqueUsernames.length || !whatsappPhones.includes(phone))
+      .map((phone) => `tg-phone:${phone}`),
+    ...whatsappPhones.map((phone) => `wa:${phone}`),
   ];
+  if (hasTelegramMarker && uniqueUsernames.length === 0 && uniqueTelegramAliases.length === 0 && telegramPhones.length === 0) {
+    contactParts.push('tg:mentioned');
+  }
+  if (hasWhatsappMarker && whatsappPhones.length === 0) {
+    contactParts.push('wa:mentioned');
+  }
 
   return {
     contactPhone: uniquePhones.length > 0 ? uniquePhones.join(',') : null,

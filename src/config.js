@@ -48,6 +48,7 @@ function parsePipelineMode(value) {
   if (!normalized) return null;
   if (['ads', 'ad', 'listing', 'listings'].includes(normalized)) return 'ads';
   if (['services', 'service'].includes(normalized)) return 'services';
+  if (['taxi', 'rides', 'travel'].includes(normalized)) return 'taxi';
   return normalized;
 }
 
@@ -80,7 +81,12 @@ function resolveAdKeywords() {
 export function loadConfig() {
   const explicitPostApiKind = parsePostApiKind(process.env.TG_POST_API_KIND);
   const pipelineMode = resolvePipelineMode(process.env.TG_PIPELINE_MODE, process.env.TG_POST_API_KIND);
-  const derivedPostApiKind = pipelineMode === 'services' ? 2 : 1;
+  const postApiRequested = parseBool(process.env.TG_POST_API_ENABLED, false);
+  const derivedPostApiKind = pipelineMode === 'services'
+    ? 2
+    : pipelineMode === 'ads'
+      ? 1
+      : null;
 
   const config = {
     apiId: Number(process.env.TG_API_ID),
@@ -96,7 +102,8 @@ export function loadConfig() {
     pipelineMode,
     sources: resolveSources(),
     adKeywords: resolveAdKeywords(),
-    postApiEnabled: parseBool(process.env.TG_POST_API_ENABLED, false),
+    postApiRequested,
+    postApiEnabled: postApiRequested,
     postApiUrl: String(process.env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
     postApiAccountId: Number(process.env.TG_POST_API_ACCOUNT_ID || 0),
     postApiKind: explicitPostApiKind || derivedPostApiKind,
@@ -134,7 +141,9 @@ function validateConfig(config) {
     );
   }
   if (!['ads', 'services'].includes(config.pipelineMode)) {
-    throw new Error('Invalid TG_PIPELINE_MODE in .env. Expected ads or services.');
+    if (config.pipelineMode !== 'taxi') {
+      throw new Error('Invalid TG_PIPELINE_MODE in .env. Expected ads, services or taxi.');
+    }
   }
   if (
     Number.isInteger(config.postApiKind)
@@ -150,7 +159,7 @@ function validateConfig(config) {
     if (!Number.isInteger(config.postApiAccountId) || config.postApiAccountId <= 0) {
       throw new Error('Invalid TG_POST_API_ACCOUNT_ID in .env. Expected a positive integer account id.');
     }
-    if (![1, 2].includes(config.postApiKind)) {
+    if (config.pipelineMode !== 'taxi' && ![1, 2].includes(config.postApiKind)) {
       throw new Error('Invalid TG_POST_API_KIND in .env. Expected 1 (ad) or 2 (service).');
     }
     if (!Number.isFinite(config.postApiDefaultPrice) || config.postApiDefaultPrice <= 0) {

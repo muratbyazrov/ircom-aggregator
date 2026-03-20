@@ -15,6 +15,12 @@ import {
   FALLBACK_LISTING_CATEGORY_BY_CODE,
   FALLBACK_SERVICE_CATEGORY_BY_CODE,
 } from './parsing/adParser.js';
+import {
+  looksLikeTaxiOffer,
+  extractTaxiStructuredData,
+  resolveTaxiDepartureAt,
+  isTaxiOfferExpired,
+} from './parsing/taxiParser.js';
 import { createPhotoStorage } from './media/photoStorage.js';
 import { buildAuthParams, logAuthError } from './telegram/auth.js';
 
@@ -120,6 +126,19 @@ function getPostPhotoPaths(post) {
   return parseStoredPhotoPaths(post?.photo_path || post?.photoPath);
 }
 
+function buildPostPreview(text, maxLength = 90) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1).trim()}...`;
+}
+
+function logTaxiSkip({ source, msgId, reason, text }) {
+  const preview = buildPostPreview(text);
+  const suffix = preview ? ` | ${preview}` : '';
+  console.log(`Skip taxi ${source}/${msgId}: ${reason}${suffix}`);
+}
+
 function splitMultiValueField(value) {
   return String(value || '')
     .split(',')
@@ -138,12 +157,32 @@ function normalizeCategoryLookupKey(value) {
 }
 
 function getStorageTableName(config) {
+  if (config?.pipelineMode === 'taxi') return 'taxi_posts';
   return config?.pipelineMode === 'services' ? 'service_posts' : 'posts';
 }
 
 function matchesPipelineMode(text, config) {
+  if (config?.pipelineMode === 'taxi') {
+    return looksLikeTaxiOffer(text);
+  }
   const detectedKind = detectPostKind(text);
   return config?.pipelineMode === 'services' ? detectedKind === 2 : detectedKind !== 2;
+}
+
+function shouldKeepTextByFilter(text, config) {
+  if (config?.pipelineMode === 'taxi') {
+    return looksLikeTaxiOffer(text);
+  }
+
+  return looksLikeAd(text, config.adKeywords) && matchesPipelineMode(text, config);
+}
+
+function extractPostData(text, config) {
+  if (config?.pipelineMode === 'taxi') {
+    return extractTaxiStructuredData(text);
+  }
+
+  return extractStructuredData(text, { kind: config.postApiKind });
 }
 
 function getFallbackCategoryMap(kind) {
@@ -199,7 +238,7 @@ function createCategoryResolver(categories, config, kind) {
 }
 
 async function loadCategoryResolver({ config, postApi }) {
-  if (!config.postApiEnabled) {
+  if (!config.postApiEnabled || config?.pipelineMode === 'taxi') {
     return createCategoryResolver([], config, config.postApiKind);
   }
 
@@ -240,14 +279,141 @@ function buildListingPayload(post, config, categoryResolver) {
   };
 }
 
+function clampText(value, maxLength, fallback = '') {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return fallback;
+  if (normalized.length <= maxLength) return normalized;
+  return normalized.slice(0, maxLength).trim();
+}
+
+function getNormalizedPhoneValue(value) {
+  const raw = getFirstMultiValue(value);
+  if (!raw) return null;
+  const normalized = String(raw).replace(/[^\d+]/g, '').trim();
+  return normalized || null;
+}
+
+function getNormalizedPhoneValues(value) {
+  return splitMultiValueField(value)
+    .map((item) => String(item).replace(/[^\d+]/g, '').trim())
+    .filter(Boolean);
+}
+
+function getNormalizedTelegramValue(value) {
+  const raw = getFirstMultiValue(value, { prefix: '@' });
+  if (!raw) return null;
+  return String(raw).trim() || null;
+}
+
+function getTaggedContactValue(contactText, prefixes) {
+  for (const part of String(contactText || '').split(';')) {
+    const normalizedPart = String(part || '').trim();
+    for (const prefix of prefixes) {
+      if (!normalizedPart.startsWith(prefix)) continue;
+      const value = normalizedPart.slice(prefix.length).trim();
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function hasWhatsappMention(text) {
+  return /(?:wh(?:a)?ts?\s*app|wats?\s*app|ватсап|ватсапп|вацап|вацап|ваца|вац|вотсап|васап)/i.test(String(text || ''));
+}
+
+function getNormalizedTelegramContactValue(contactUsername, contactText) {
+  const username = getNormalizedTelegramValue(contactUsername);
+  if (username) return username;
+
+  const taggedPhone = getTaggedContactValue(contactText, ['tg-phone:']);
+  if (taggedPhone) return taggedPhone;
+
+  return null;
+}
+
+function buildTaxiPayload(post, config) {
+  const rawText = String(post?.raw_text || post?.rawText || post?.description || '').trim();
+  const reparsed = extractTaxiStructuredData(rawText);
+  const direction = Number(reparsed.direction || post?.taxi_direction || post?.taxiDirection || 2) || 2;
+  const description = clampText(rawText || reparsed.description || post?.description, 2000, '');
+  const phoneValues = getNormalizedPhoneValues(post?.contact_phone || post?.contactPhone);
+  const phone = phoneValues[0] || getNormalizedPhoneValue(post?.contact_phone || post?.contactPhone);
+  const contactText = post?.contact_text || post?.contactText;
+  const telegram = getNormalizedTelegramContactValue(post?.contact_username || post?.contactUsername, contactText);
+  const whatsappTaggedPhone = getTaggedContactValue(contactText, ['wa:']);
+  const departureAt = resolveTaxiDepartureAt(rawText, post?.date);
+  const backendEntityId = Number(post?.backend_entity_id || post?.backendEntityId || 0);
+  if (!phone) {
+    throw new Error(`Taxi backend sync requires a phone number for ${post?.source}/${post?.msg_id}`);
+  }
+  const payload = {
+    accountId: config.postApiAccountId,
+    direction,
+    description,
+    phone,
+    price: Number(reparsed.priceValue || post?.price_value || post?.priceValue || config.postApiDefaultPrice || 1),
+  };
+
+  if (telegram) payload.telegram = telegram;
+  if (hasWhatsappMention(rawText) || whatsappTaggedPhone) {
+    payload.whatsapp = whatsappTaggedPhone || phoneValues[1] || phone;
+  }
+  if (departureAt) payload.departureAt = departureAt;
+  if (direction === 2) {
+    const routeDirection = Number(reparsed.routeDirection || 0);
+    const fromPlace = clampText(reparsed.fromPlace || post?.taxi_from || post?.taxiFrom, 60);
+    const toPlace = clampText(reparsed.toPlace || post?.taxi_to || post?.taxiTo, 60);
+    const routeText = clampText(
+      reparsed.routeText || post?.taxi_route || post?.taxiRoute || (fromPlace && toPlace ? `${fromPlace} - ${toPlace}` : ''),
+      160
+    );
+
+    if (routeDirection === 1 || routeDirection === 2) payload.routeDirection = routeDirection;
+    if (fromPlace) payload.fromPlace = fromPlace;
+    if (toPlace) payload.toPlace = toPlace;
+    if (routeText) payload.routeText = routeText;
+  }
+
+  const vehicle = clampText(reparsed.vehicle || post?.taxi_vehicle || post?.taxiVehicle, 80);
+  if (vehicle) {
+    payload.vehicle = vehicle;
+  }
+
+  const seatsFree = Number(reparsed.seatsFree ?? post?.taxi_seats_free ?? post?.taxiSeatsFree);
+  if (Number.isInteger(seatsFree) && seatsFree >= 0) {
+    payload.seatsFree = seatsFree;
+  }
+
+  const seatsTotal = Number(reparsed.seatsTotal ?? post?.taxi_seats_total ?? post?.taxiSeatsTotal);
+  if (Number.isInteger(seatsTotal) && seatsTotal >= 1) {
+    payload.seatsTotal = seatsTotal;
+  }
+
+  return {
+    payload,
+    backendEntityId: Number.isInteger(backendEntityId) && backendEntityId > 0 ? backendEntityId : null,
+  };
+}
+
+export function extractTaxiOfferIdFromBackendResponse(response) {
+  const payload = response?.data ?? response ?? null;
+  const taxiOfferId = Number(payload?.taxiOfferId || 0);
+  return Number.isInteger(taxiOfferId) && taxiOfferId > 0 ? taxiOfferId : null;
+}
+
 function buildBackendSyncTarget(config) {
   const endpoint = String(config?.postApiUrl || '').trim().replace(/\/+$/, '');
   const accountId = Number(config?.postApiAccountId || 0);
   const kind = Number(config?.postApiKind || 0);
-  return JSON.stringify({ endpoint, accountId, kind });
+  return JSON.stringify({
+    endpoint,
+    accountId,
+    mode: String(config?.pipelineMode || 'ads'),
+    ...(kind > 0 ? { kind } : {}),
+  });
 }
 
-async function syncPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget, categoryResolver }) {
+async function syncListingPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget, categoryResolver }) {
   if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
 
   const payload = buildListingPayload(post, config, categoryResolver);
@@ -291,6 +457,89 @@ async function syncPostToBackend({ post, config, db, postApi, mediaUploader, bac
     db.markBackendSyncFailure({ id: post.id, error: err?.message || err });
     throw err;
   }
+}
+
+async function syncTaxiPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget }) {
+  if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
+
+  const { payload, backendEntityId } = buildTaxiPayload(post, config);
+  const uploadedPhotos = [];
+  const originalPhotoPaths = getPostPhotoPaths(post).slice(0, 10);
+  const existingPhotoPaths = originalPhotoPaths.filter((photoPath) => fs.existsSync(photoPath));
+  const missingPhotoPathsCount = originalPhotoPaths.length - existingPhotoPaths.length;
+
+  if (missingPhotoPathsCount > 0) {
+    db.updateStoredPhotos({
+      id: post.id,
+      photoPath: existingPhotoPaths[0] || null,
+      photoPaths: existingPhotoPaths.length > 0 ? JSON.stringify(existingPhotoPaths) : null,
+    });
+    console.warn(
+      `Skipping ${missingPhotoPathsCount} missing local photo(s) for ${post.source}/${post.msg_id} during taxi backend sync`
+    );
+  }
+
+  for (const photoPath of existingPhotoPaths) {
+    try {
+      const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath, { entityType: 'taxi' });
+      if (uploadedPhoto?.photoUrl) {
+        uploadedPhotos.push(uploadedPhoto);
+      }
+    } catch (err) {
+      console.error(`Taxi photo upload failed for ${post.source}/${post.msg_id}: ${err?.message || err}`);
+    }
+  }
+
+  if (uploadedPhotos.length > 0) {
+    payload.carPhotos = uploadedPhotos.map((photo) => photo.photoUrl);
+  }
+
+  try {
+    const response = backendEntityId
+      ? await postApi.updateTaxiOffer({ ...payload, taxiOfferId: backendEntityId })
+      : await postApi.createTaxiOffer(payload);
+    const resolvedBackendEntityId = extractTaxiOfferIdFromBackendResponse(response) || backendEntityId;
+    if (!backendEntityId && !resolvedBackendEntityId) {
+      throw new Error('Taxi backend response did not include taxiOfferId');
+    }
+    db.markBackendSyncSuccess({
+      id: post.id,
+      backendSyncTarget,
+      backendEntityId: resolvedBackendEntityId,
+    });
+    return {
+      skipped: false,
+      synced: true,
+      uploadedPhotosCount: uploadedPhotos.length,
+      backendEntityId: resolvedBackendEntityId,
+      operation: backendEntityId ? 'update' : 'create',
+    };
+  } catch (err) {
+    db.markBackendSyncFailure({ id: post.id, error: err?.message || err });
+    throw err;
+  }
+}
+
+async function syncPostToBackend(args) {
+  if (args?.config?.pipelineMode === 'taxi') {
+    return syncTaxiPostToBackend(args);
+  }
+
+  return syncListingPostToBackend(args);
+}
+
+async function deleteTaxiPostFromBackend({ post, config, postApi }) {
+  const backendEntityId = Number(post?.backend_entity_id || post?.backendEntityId || 0);
+  if (!config?.postApiEnabled || config?.pipelineMode !== 'taxi' || !Number.isInteger(backendEntityId) || backendEntityId <= 0) {
+    return { skipped: true };
+  }
+
+  await postApi.deleteTaxiOffer({
+    accountId: config.postApiAccountId,
+    taxiOfferId: backendEntityId,
+  });
+
+  return { skipped: false, deleted: true };
 }
 
 function buildTitleFingerprint(value) {
@@ -501,10 +750,35 @@ export async function runApp() {
     console.log(session);
 
     if (config.clearBeforeRun) {
+      if (config.postApiEnabled && config.pipelineMode === 'taxi') {
+        const existingBackendPosts = db.listPostsWithBackendEntity();
+        let deletedBackendPosts = 0;
+        let failedBackendDeletes = 0;
+        for (const existingPost of existingBackendPosts) {
+          try {
+            await deleteTaxiPostFromBackend({ post: existingPost, config, postApi });
+            deletedBackendPosts++;
+          } catch (err) {
+            failedBackendDeletes++;
+            console.error(`Taxi backend cleanup failed for ${existingPost.source}/${existingPost.msg_id}: ${err?.message || err}`);
+          }
+        }
+        if (deletedBackendPosts > 0 || failedBackendDeletes > 0) {
+          console.log(
+            `\nTaxi backend cleanup before clear: deleted ${deletedBackendPosts}`
+              + (failedBackendDeletes > 0 ? `, failed ${failedBackendDeletes}` : '')
+          );
+        }
+      }
+
       const deletedRows = db.clear();
       console.log(`\nDB cleanup enabled: removed ${deletedRows} rows from ${storageTableName}`);
       if (config.postApiEnabled) {
-        console.log('Backend sync note: clear-before-run resends the latest Telegram posts and can skew backend-to-backend comparisons.');
+        if (config.pipelineMode === 'taxi') {
+          console.log('Backend sync note: clear-before-run removes synced taxi offers and recreates them from the latest Telegram scan.');
+        } else {
+          console.log('Backend sync note: clear-before-run resends the latest Telegram posts and can skew backend-to-backend comparisons.');
+        }
       }
     }
 
@@ -529,6 +803,43 @@ export async function runApp() {
     }
 
     const duplicateIndex = createDuplicateIndex(db.listPostsForDedupe());
+
+    if (config.pipelineMode === 'taxi') {
+      const expiredTaxiPosts = db.getExpiredByDepartureBefore(new Date().toISOString());
+      if (expiredTaxiPosts.length > 0) {
+        cleanupLocalPhotos(expiredTaxiPosts.flatMap((post) => getPostPhotoPaths(post)));
+        if (config.postApiEnabled) {
+          let deletedBackendPosts = 0;
+          let failedBackendDeletes = 0;
+          for (const expiredPost of expiredTaxiPosts) {
+            try {
+              const result = await deleteTaxiPostFromBackend({ post: expiredPost, config, postApi });
+              if (!result?.skipped) {
+                deletedBackendPosts++;
+              }
+            } catch (err) {
+              failedBackendDeletes++;
+              console.error(`Expired taxi backend cleanup failed for ${expiredPost.source}/${expiredPost.msg_id}: ${err?.message || err}`);
+            }
+          }
+          const deletedLocalExpiredTaxiPosts = db.deletePostsByIds(expiredTaxiPosts.map((post) => post.id));
+          for (const expiredPost of expiredTaxiPosts) {
+            duplicateIndex.removePost(expiredPost);
+          }
+          console.log(
+            `\nTaxi departure cleanup: removed ${deletedLocalExpiredTaxiPosts} expired local posts`
+              + `, ${deletedBackendPosts} backend taxi offers`
+              + (failedBackendDeletes > 0 ? ` (${failedBackendDeletes} backend deletions failed)` : '')
+          );
+        } else {
+          const deletedLocalExpiredTaxiPosts = db.deletePostsByIds(expiredTaxiPosts.map((post) => post.id));
+          for (const expiredPost of expiredTaxiPosts) {
+            duplicateIndex.removePost(expiredPost);
+          }
+          console.log(`\nTaxi departure cleanup: removed ${deletedLocalExpiredTaxiPosts} expired local posts`);
+        }
+      }
+    }
 
     if (config.postApiEnabled) {
       const pendingBackendPosts = db.listPendingBackendSync({ backendSyncTarget });
@@ -576,18 +887,39 @@ export async function runApp() {
 
       if (config.postApiEnabled) {
         try {
-          const cleanupResult = await postApi.cleanupImportedListings({
-            accountId: config.postApiAccountId,
-            kind: config.postApiKind,
-            olderThan: retentionCutoffIso,
-          });
-          const deletedListings = Number(cleanupResult?.data?.deletedListings || 0);
-          const deletedPhotos = Number(cleanupResult?.data?.deletedPhotos || 0);
-          const failedPhotos = Number(cleanupResult?.data?.failedPhotos || 0);
-          console.log(
-            `\nTTL cleanup: removed ${deletedExpiredPosts} local posts, ${deletedListings} backend listings, ${deletedPhotos} S3 objects`
-              + (failedPhotos > 0 ? ` (${failedPhotos} S3 deletions failed)` : '')
-          );
+          if (config.pipelineMode === 'taxi') {
+            let deletedBackendPosts = 0;
+            let failedBackendDeletes = 0;
+            for (const expiredPost of expiredPosts) {
+              try {
+                const result = await deleteTaxiPostFromBackend({ post: expiredPost, config, postApi });
+                if (!result?.skipped) {
+                  deletedBackendPosts++;
+                }
+              } catch (err) {
+                failedBackendDeletes++;
+                console.error(`Taxi TTL cleanup failed for ${expiredPost.source}/${expiredPost.msg_id}: ${err?.message || err}`);
+              }
+            }
+            console.log(
+              `\nTTL cleanup: removed ${deletedExpiredPosts} local posts`
+                + `, ${deletedBackendPosts} backend taxi offers`
+                + (failedBackendDeletes > 0 ? ` (${failedBackendDeletes} backend deletions failed)` : '')
+            );
+          } else {
+            const cleanupResult = await postApi.cleanupImportedListings({
+              accountId: config.postApiAccountId,
+              kind: config.postApiKind,
+              olderThan: retentionCutoffIso,
+            });
+            const deletedListings = Number(cleanupResult?.data?.deletedListings || 0);
+            const deletedPhotos = Number(cleanupResult?.data?.deletedPhotos || 0);
+            const failedPhotos = Number(cleanupResult?.data?.failedPhotos || 0);
+            console.log(
+              `\nTTL cleanup: removed ${deletedExpiredPosts} local posts, ${deletedListings} backend listings, ${deletedPhotos} S3 objects`
+                + (failedPhotos > 0 ? ` (${failedPhotos} S3 deletions failed)` : '')
+            );
+          }
         } catch (err) {
           console.error(`TTL cleanup failed: ${err?.message || err}`);
         }
@@ -597,12 +929,20 @@ export async function runApp() {
     }
 
     console.log(`\nSources configured: ${config.sources.length}`);
-    console.log(`Pipeline mode: ${config.pipelineMode} -> table ${storageTableName} -> backend kind ${config.postApiKind}`);
-    console.log(`Filter mode: ${config.onlyAds ? 'only marketplace-like posts' : 'all posts'}`);
-    if (config.onlyAds) {
+    console.log(
+      `Pipeline mode: ${config.pipelineMode} -> table ${storageTableName}`
+        + (config.postApiEnabled
+          ? (config.pipelineMode === 'taxi' ? ' -> backend domain taxi' : ` -> backend kind ${config.postApiKind}`)
+          : ' -> backend sync disabled')
+    );
+    console.log(
+      `Filter mode: ${config.onlyAds
+        ? (config.pipelineMode === 'taxi' ? 'only taxi-like posts' : 'only marketplace-like posts')
+        : 'all posts'}`
+    );
+    if (config.onlyAds && config.pipelineMode !== 'taxi') {
       console.log(`Ad keywords: ${config.adKeywords.join(', ')}`);
     }
-
     let totalSaved = 0;
 
     for (const source of config.sources) {
@@ -640,26 +980,42 @@ export async function runApp() {
         const hasAnyVisualMedia = unitMessages.some(hasVisualMedia);
         const isRepost = unitMessages.some((item) => Boolean(item?.fwdFrom || item?.forward || item?.forwardInfo));
         const isReply = unitMessages.some((item) => Boolean(item?.replyTo || item?.replyToMsgId));
+        const postDateIso = normalizeTelegramMessageDate(primaryMessage?.date);
+        const senderId = normalizeSenderId(
+          primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
+        );
+        const taxiExpired = config.pipelineMode === 'taxi' && text
+          ? isTaxiOfferExpired(text, primaryMessage?.date)
+          : false;
 
         if (!text && !hasAnyVisualMedia) continue;
         if (isReply) {
+          if (config.pipelineMode === 'taxi') {
+            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'reply', text });
+          }
           skippedAsReply++;
           continue;
         }
         if (isRepost) {
+          if (config.pipelineMode === 'taxi') {
+            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'repost', text });
+          }
           skippedAsRepost++;
           continue;
         }
-        if (config.onlyAds && (!text || !looksLikeAd(text, config.adKeywords) || !matchesPipelineMode(text, config))) {
+        if (config.onlyAds && (!text || !shouldKeepTextByFilter(text, config))) {
+          if (config.pipelineMode === 'taxi') {
+            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'filter', text });
+          }
           skippedByFilter++;
           continue;
         }
-
-        const senderId = normalizeSenderId(
-          primaryMessage?.senderId || unitMessages.find((item) => item?.senderId !== null && item?.senderId !== undefined)?.senderId
-        );
-        const structured = extractStructuredData(text, { kind: config.postApiKind });
-        const postDateIso = normalizeTelegramMessageDate(primaryMessage?.date);
+        if (config.pipelineMode === 'taxi' && taxiExpired) {
+          logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'expired', text });
+          skippedByFilter++;
+          continue;
+        }
+        const structured = extractPostData(text, config);
         if (!postDateIso) {
           skippedWithoutDate++;
           console.warn(`Skip ${source}/${primaryMessage?.id}: message date is missing or invalid`);
@@ -685,6 +1041,9 @@ export async function runApp() {
           senderId,
           contentHash,
         })) {
+          if (config.pipelineMode === 'taxi') {
+            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'duplicate-content', text });
+          }
           skippedAsDuplicate++;
           continue;
         }
@@ -694,6 +1053,9 @@ export async function runApp() {
           contactPhone: structured.contactPhone,
           dedupeKey,
         })) {
+          if (config.pipelineMode === 'taxi') {
+            logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'duplicate-fuzzy', text });
+          }
           skippedAsDuplicate++;
           continue;
         }
@@ -705,6 +1067,9 @@ export async function runApp() {
             .at(-1);
 
           if (latestExistingDuplicate && comparePostsByRecency(latestExistingDuplicate, incomingPost) >= 0) {
+            if (config.pipelineMode === 'taxi') {
+              logTaxiSkip({ source, msgId: primaryMessage?.id, reason: 'duplicate-index', text });
+            }
             skippedAsDuplicate++;
             continue;
           }
@@ -738,13 +1103,25 @@ export async function runApp() {
           title: structured.title,
           description: structured.description,
           price_value: structured.priceValue,
+          raw_text: structured.rawText || text || null,
           dedupe_key: dedupeKey,
           sender_id: senderId,
           content_hash: contentHash,
           contact_phone: structured.contactPhone,
           contact_username: structured.contactUsername,
           contact_text: structured.contactText,
-          category: structured.categoryCode || structured.category,
+          category: structured.categoryCode || structured.category || null,
+          taxi_direction: structured.direction || null,
+          taxi_direction_name: structured.directionName || null,
+          taxi_from: structured.fromPlace || null,
+          taxi_to: structured.toPlace || null,
+          taxi_route: structured.routeText || null,
+          taxi_departure_at: resolveTaxiDepartureAt(text, primaryMessage?.date) || null,
+          taxi_departure_text: structured.departureText || null,
+          taxi_seats_total: structured.seatsTotal ?? null,
+          taxi_seats_free: structured.seatsFree ?? null,
+          taxi_vehicle: structured.vehicle || null,
+          backend_entity_id: null,
           photo_path: photoPaths[0] || null,
           photo_paths: photoPaths.length > 0 ? JSON.stringify(photoPaths) : null,
         });

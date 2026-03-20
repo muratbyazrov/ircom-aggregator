@@ -73,6 +73,18 @@ export function createIrcomApiClient(config) {
     return request('listing', 'createListing', params);
   }
 
+  async function createTaxiOffer(params) {
+    return request('taxi', 'createTaxiOffer', params);
+  }
+
+  async function updateTaxiOffer(params) {
+    return request('taxi', 'updateTaxiOffer', params);
+  }
+
+  async function deleteTaxiOffer(params) {
+    return request('taxi', 'deleteTaxiOffer', params);
+  }
+
   async function cleanupImportedListings(params) {
     return request('listing', 'cleanupImportedListings', params);
   }
@@ -83,5 +95,12 @@ export function createIrcomApiClient(config) {
     return response?.data || [];
   }
 
-  return { createListing, cleanupImportedListings, getCategories };
+  return {
+    createListing,
+    createTaxiOffer,
+    updateTaxiOffer,
+    deleteTaxiOffer,
+    cleanupImportedListings,
+    getCategories,
+  };
 }

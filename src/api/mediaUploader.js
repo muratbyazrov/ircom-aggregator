@@ -195,7 +195,7 @@ export function createMediaUploader(config) {
     }
   }
 
-  async function uploadPhotoFromPath(photoPath) {
+  async function uploadPhotoFromPath(photoPath, { entityType = 'listing' } = {}) {
     const normalizedPath = String(photoPath || '').trim();
     if (!normalizedPath) return null;
     if (!fs.existsSync(normalizedPath)) {
@@ -228,7 +228,7 @@ export function createMediaUploader(config) {
       event: 'initPhotoUpload',
       params: {
         accountId,
-        entityType: 'listing',
+        entityType,
         mimeType: preparedFile.mimeType,
         byteSize: preparedFile.uploadSize,
         originalName: preparedFile.fileName,
