@@ -1,0 +1,18 @@
+# Dependencies — reinstalled inside the image
+node_modules
+
+# Secrets — passed at runtime via env_file, never baked into the image
+.env
+.env.*
+
+# Runtime data — lives in a Docker volume, not in the image
+data.db
+*.db
+media/
+data/
+
+# Dev / CI artefacts
+.git
+.gitignore
+*.log
+coverage/
