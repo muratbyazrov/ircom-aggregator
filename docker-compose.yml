@@ -25,5 +25,16 @@ services:
       # Persist SQLite DB and downloaded media between container restarts
       - aggregator_data:/app/data
 
+  tg-bot:
+    build:
+      context: ../ircom-tg-bot
+    restart: unless-stopped
+
+    # Secrets: BOT_TOKEN, ADMIN_CHAT_ID, WEBAPP_URL, and optional PORT
+    env_file: ../ircom-tg-bot/.env
+
+    ports:
+      - "3000:3000"
+
 volumes:
   aggregator_data:
