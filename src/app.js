@@ -94,7 +94,7 @@ export async function runApp() {
   }
 
   const storageTableName = getStorageTableName(config);
-  const db = createPostsRepository('data.db', { tableName: storageTableName });
+  const db = createPostsRepository(config.dbPath, { tableName: storageTableName });
   const postApi = createIrcomApiClient(config);
   const mediaUploader = createMediaUploader(config);
   const backendSyncTarget = buildBackendSyncTarget(config);

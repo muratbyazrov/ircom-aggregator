@@ -13,6 +13,7 @@
     "dedup:services": "TG_DEDUP_ONLY=true node index.js --mode=services",
     "dedup:taxi": "TG_DEDUP_ONLY=true node index.js --mode=taxi",
     "dedup": "npm run dedup:ads && npm run dedup:services && npm run dedup:taxi",
+    "schedule": "node scheduler.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

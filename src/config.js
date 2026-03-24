@@ -201,6 +201,7 @@ export async function loadConfig(options = {}) {
     savePhotos: parseBool(env.TG_SAVE_PHOTOS, fc.savePhotos ?? true),
     clearBeforeRun: parseBool(env.TG_CLEAR_BEFORE_RUN, fc.clearBeforeRun ?? false),
     photosDir: String(env.TG_PHOTOS_DIR || fc.photosDir || 'media').trim(),
+    dbPath: String(env.TG_DB_PATH || 'data.db').trim(),
     taxiVerboseSkips: parseBool(env.TG_TAXI_VERBOSE_SKIPS, fc.taxiVerboseSkips ?? false),
     retentionDays: (env.TG_RETENTION_DAYS != null && env.TG_RETENTION_DAYS !== '')
       ? Number(env.TG_RETENTION_DAYS)
