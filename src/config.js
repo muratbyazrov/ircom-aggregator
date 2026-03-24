@@ -1,27 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { parse as parseDotenv } from 'dotenv';
-
-const DEFAULT_AD_KEYWORDS = [
-  'продам',
-  'продаю',
-  'куплю',
-  'сдам',
-  'аренда',
-  'ищу',
-  'работа',
-  'вакансия',
-  'услуги',
-  'цена',
-  'торг',
-  'руб',
-  'сом',
-  'тенге',
-  'kzt',
-  'kgs',
-  'usd',
-];
 
 function parseCliArgValue(argv, flagName) {
   for (let index = 0; index < argv.length; index += 1) {
@@ -112,13 +93,6 @@ function loadRuntimeEnv({ env, argv, cwd }) {
     loadedFiles.push(baseEnvPath);
   }
 
-  if (runtimeOptions.mode) {
-    const modeEnvPath = path.resolve(cwd, `.env.${runtimeOptions.mode}`);
-    if (applyEnvFile(modeEnvPath, env, { override: true })) {
-      loadedFiles.push(modeEnvPath);
-    }
-  }
-
   const explicitEnvPath = resolveEnvFilePath(runtimeOptions.envFile, cwd);
   if (explicitEnvPath && !loadedFiles.includes(explicitEnvPath)) {
     if (applyEnvFile(explicitEnvPath, env, { override: true })) {
@@ -153,12 +127,22 @@ function resolveSources(env) {
   return parseList(env.TG_SOURCES).map(normalizeSource).filter(Boolean);
 }
 
-function resolveAdKeywords(env) {
-  const envKeywords = parseList(env.TG_AD_KEYWORDS).map((kw) => kw.toLowerCase());
-  return envKeywords.length > 0 ? envKeywords : DEFAULT_AD_KEYWORDS;
+async function loadFileConfig(pipelineMode, cwd) {
+  const load = async (filePath) => {
+    if (!existsSync(filePath)) return {};
+    const { default: cfg } = await import(pathToFileURL(filePath).href);
+    return cfg || {};
+  };
+
+  const defaultCfg = await load(path.resolve(cwd, 'config', 'default.js'));
+  const modeCfg = pipelineMode
+    ? await load(path.resolve(cwd, 'config', `${pipelineMode}.js`))
+    : {};
+
+  return { ...defaultCfg, ...modeCfg };
 }
 
-export function loadConfig(options = {}) {
+export async function loadConfig(options = {}) {
   const env = options.env || process.env;
   const argv = Array.isArray(options.argv) ? options.argv : process.argv.slice(2);
   const cwd = options.cwd || process.cwd();
@@ -168,47 +152,67 @@ export function loadConfig(options = {}) {
     ? loadRuntimeEnv({ env, argv, cwd })
     : parseRuntimeOptions(argv, env);
 
-  const rawPipelineMode = runtimeOptions.mode || env.TG_PIPELINE_MODE;
+  const rawMode = runtimeOptions.mode || env.TG_PIPELINE_MODE;
+  const pipelineMode = resolvePipelineMode(rawMode, env.TG_POST_API_KIND);
+
+  // Загружаем несекретные настройки из config-файлов
+  const fc = await loadFileConfig(pipelineMode, cwd);
+
+  // Sources: TG_SOURCES в env переопределяет config-файл
+  const sources = env.TG_SOURCES
+    ? resolveSources(env)
+    : (fc.sources || []).map(normalizeSource).filter(Boolean);
+
+  // adKeywords: TG_AD_KEYWORDS в env переопределяет config-файл
+  const envKeywords = parseList(env.TG_AD_KEYWORDS || '').map((kw) => kw.toLowerCase());
+  const adKeywords = envKeywords.length > 0
+    ? envKeywords
+    : (fc.adKeywords || []).map((kw) => kw.toLowerCase());
+
   const explicitPostApiKind = parsePostApiKind(env.TG_POST_API_KIND);
-  const pipelineMode = resolvePipelineMode(rawPipelineMode, env.TG_POST_API_KIND);
-  const postApiRequested = parseBool(env.TG_POST_API_ENABLED, false);
-  const derivedPostApiKind = pipelineMode === 'services'
-    ? 2
-    : pipelineMode === 'ads'
-      ? 1
-      : null;
+  const derivedPostApiKind = pipelineMode === 'services' ? 2 : pipelineMode === 'ads' ? 1 : null;
+  const postApiKind = explicitPostApiKind ?? fc.postApiKind ?? derivedPostApiKind;
+  const postApiRequested = parseBool(env.TG_POST_API_ENABLED, fc.postApiEnabled ?? false);
+  const dedupOnly = parseBool(env.TG_DEDUP_ONLY, false);
 
   const config = {
+    // Секреты из .env
     apiId: Number(env.TG_API_ID),
     apiHash: env.TG_API_HASH,
     defaultPhoneNumber: String(env.TG_PHONE_NUMBER || '').trim(),
     forceSms: parseBool(env.TG_FORCE_SMS, false),
-    fetchLimit: Number(env.TG_FETCH_LIMIT || 100),
-    onlyAds: parseBool(env.TG_ONLY_ADS, true),
-    savePhotos: parseBool(env.TG_SAVE_PHOTOS, true),
-    clearBeforeRun: parseBool(env.TG_CLEAR_BEFORE_RUN, false),
-    photosDir: String(env.TG_PHOTOS_DIR || 'media').trim(),
     session: env.TG_SESSION || '',
+    postApiAccountId: Number(env.TG_POST_API_ACCOUNT_ID || 0),
+    postApiUrl: String(env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
+    s3PublicBaseUrl: String(env.TG_S3_PUBLIC_BASE_URL || '').trim(),
+
+    // Из config-файлов (env переопределяет при наличии)
     pipelineMode,
-    taxiVerboseSkips: parseBool(env.TG_TAXI_VERBOSE_SKIPS, false),
-    sources: resolveSources(env),
-    adKeywords: resolveAdKeywords(env),
+    sources,
+    adKeywords,
+    postApiKind,
     postApiRequested,
     postApiEnabled: postApiRequested,
-    postApiUrl: String(env.TG_POST_API_URL || 'http://127.0.0.1:3002/ircom-api/v1').trim(),
-    postApiAccountId: Number(env.TG_POST_API_ACCOUNT_ID || 0),
-    postApiKind: explicitPostApiKind || derivedPostApiKind,
-    postApiDefaultCategory: String(env.TG_POST_API_DEFAULT_CATEGORY || 'Другое').trim(),
-    postApiDefaultPrice: Number(env.TG_POST_API_DEFAULT_PRICE || 1),
-    postApiTimeoutMs: Number(env.TG_POST_API_TIMEOUT_MS || 15000),
-    retentionDays: Number(env.TG_RETENTION_DAYS || 0),
-    s3PublicBaseUrl: String(env.TG_S3_PUBLIC_BASE_URL || '').trim(),
-    s3MaxUploadBytes: Number(env.TG_S3_MAX_UPLOAD_BYTES || 10485760),
-    s3ImageOptimizationEnabled: parseBool(env.TG_S3_IMAGE_OPTIMIZATION_ENABLED, true),
-    s3ImageMaxDimension: Number(env.TG_S3_IMAGE_MAX_DIMENSION || 2000),
-    s3ImageQuality: Number(env.TG_S3_IMAGE_QUALITY || 84),
+    postApiDefaultCategory: String(env.TG_POST_API_DEFAULT_CATEGORY || fc.postApiDefaultCategory || 'Другое').trim(),
+    postApiDefaultPrice: Number(env.TG_POST_API_DEFAULT_PRICE || fc.postApiDefaultPrice || 1),
+    postApiTimeoutMs: Number(env.TG_POST_API_TIMEOUT_MS || fc.postApiTimeoutMs || 15000),
+    fetchLimit: Number(env.TG_FETCH_LIMIT || fc.fetchLimit || 100),
+    onlyAds: parseBool(env.TG_ONLY_ADS, fc.onlyAds ?? true),
+    savePhotos: parseBool(env.TG_SAVE_PHOTOS, fc.savePhotos ?? true),
+    clearBeforeRun: parseBool(env.TG_CLEAR_BEFORE_RUN, fc.clearBeforeRun ?? false),
+    photosDir: String(env.TG_PHOTOS_DIR || fc.photosDir || 'media').trim(),
+    taxiVerboseSkips: parseBool(env.TG_TAXI_VERBOSE_SKIPS, fc.taxiVerboseSkips ?? false),
+    retentionDays: (env.TG_RETENTION_DAYS != null && env.TG_RETENTION_DAYS !== '')
+      ? Number(env.TG_RETENTION_DAYS)
+      : Number(fc.retentionDays ?? 0),
+    s3MaxUploadBytes: Number(env.TG_S3_MAX_UPLOAD_BYTES || fc.s3MaxUploadBytes || 10485760),
+    s3ImageOptimizationEnabled: parseBool(env.TG_S3_IMAGE_OPTIMIZATION_ENABLED, fc.s3ImageOptimizationEnabled ?? true),
+    s3ImageMaxDimension: Number(env.TG_S3_IMAGE_MAX_DIMENSION || fc.s3ImageMaxDimension || 2000),
+    s3ImageQuality: Number(env.TG_S3_IMAGE_QUALITY || fc.s3ImageQuality || 84),
+
     runtimeMode: runtimeOptions.mode || null,
     loadedEnvFiles: runtimeOptions.loadedFiles || [],
+    dedupOnly,
   };
 
   validateConfig(config);
@@ -216,6 +220,19 @@ export function loadConfig(options = {}) {
 }
 
 function validateConfig(config) {
+  if (config.dedupOnly) {
+    if (!config.postApiEnabled) {
+      throw new Error('TG_DEDUP_ONLY requires TG_POST_API_ENABLED=true or postApiEnabled: true in config/default.js.');
+    }
+    if (!Number.isInteger(config.postApiAccountId) || config.postApiAccountId <= 0) {
+      throw new Error('TG_DEDUP_ONLY requires TG_POST_API_ACCOUNT_ID in .env.');
+    }
+    if (config.pipelineMode !== 'taxi' && ![1, 2].includes(config.postApiKind)) {
+      throw new Error('TG_DEDUP_ONLY requires postApiKind in config/ads.js or config/services.js.');
+    }
+    return;
+  }
+
   if (!Number.isInteger(config.apiId) || config.apiId <= 0) {
     throw new Error('Invalid TG_API_ID in .env. Expected a positive integer from my.telegram.org');
   }
@@ -223,27 +240,25 @@ function validateConfig(config) {
     throw new Error('Invalid TG_API_HASH in .env. Expected a non-empty hash from my.telegram.org');
   }
   if (!Number.isInteger(config.fetchLimit) || config.fetchLimit <= 0) {
-    throw new Error('Invalid TG_FETCH_LIMIT in .env. Expected a positive integer.');
+    throw new Error('Invalid fetchLimit. Expected a positive integer in config/default.js or TG_FETCH_LIMIT in .env.');
   }
   if (!Number.isInteger(config.retentionDays) || config.retentionDays < 0) {
-    throw new Error('Invalid TG_RETENTION_DAYS in .env. Expected an integer >= 0.');
+    throw new Error('Invalid retentionDays. Expected an integer >= 0 in config/default.js or config/taxi.js.');
   }
   if (config.sources.length === 0) {
     throw new Error(
-      'No sources configured. Add TG_SOURCES in .env, e.g. TG_SOURCES=@channel1,@channel2,https://t.me/some_group'
+      `No sources configured. Add sources to config/${config.pipelineMode}.js`
     );
   }
-  if (!['ads', 'services'].includes(config.pipelineMode)) {
-    if (config.pipelineMode !== 'taxi') {
-      throw new Error('Invalid TG_PIPELINE_MODE in .env. Expected ads, services or taxi.');
-    }
+  if (!['ads', 'services', 'taxi'].includes(config.pipelineMode)) {
+    throw new Error('Invalid pipeline mode. Use --mode=ads, --mode=services or --mode=taxi.');
   }
   if (
     Number.isInteger(config.postApiKind)
     && ((config.pipelineMode === 'services' && config.postApiKind !== 2)
       || (config.pipelineMode === 'ads' && config.postApiKind !== 1))
   ) {
-    throw new Error('TG_PIPELINE_MODE conflicts with TG_POST_API_KIND in .env. Keep them aligned.');
+    throw new Error('pipelineMode conflicts with postApiKind in config files. Keep them aligned.');
   }
   if (config.postApiEnabled) {
     if (!config.postApiUrl) {
@@ -253,22 +268,22 @@ function validateConfig(config) {
       throw new Error('Invalid TG_POST_API_ACCOUNT_ID in .env. Expected a positive integer account id.');
     }
     if (config.pipelineMode !== 'taxi' && ![1, 2].includes(config.postApiKind)) {
-      throw new Error('Invalid TG_POST_API_KIND in .env. Expected 1 (ad) or 2 (service).');
+      throw new Error('Invalid postApiKind. Expected 1 (ads) or 2 (services) in config file.');
     }
     if (!Number.isFinite(config.postApiDefaultPrice) || config.postApiDefaultPrice <= 0) {
-      throw new Error('Invalid TG_POST_API_DEFAULT_PRICE in .env. Expected a positive number.');
+      throw new Error('Invalid postApiDefaultPrice. Expected a positive number in config/default.js.');
     }
     if (!Number.isInteger(config.postApiTimeoutMs) || config.postApiTimeoutMs <= 0) {
-      throw new Error('Invalid TG_POST_API_TIMEOUT_MS in .env. Expected a positive integer.');
+      throw new Error('Invalid postApiTimeoutMs. Expected a positive integer in config/default.js.');
     }
     if (!Number.isFinite(config.s3MaxUploadBytes) || config.s3MaxUploadBytes <= 0) {
-      throw new Error('Invalid TG_S3_MAX_UPLOAD_BYTES in .env. Expected a positive number.');
+      throw new Error('Invalid s3MaxUploadBytes. Expected a positive number in config/default.js.');
     }
     if (!Number.isInteger(config.s3ImageMaxDimension) || config.s3ImageMaxDimension <= 0) {
-      throw new Error('Invalid TG_S3_IMAGE_MAX_DIMENSION in .env. Expected a positive integer.');
+      throw new Error('Invalid s3ImageMaxDimension. Expected a positive integer in config/default.js.');
     }
     if (!Number.isInteger(config.s3ImageQuality) || config.s3ImageQuality < 1 || config.s3ImageQuality > 100) {
-      throw new Error('Invalid TG_S3_IMAGE_QUALITY in .env. Expected an integer from 1 to 100.');
+      throw new Error('Invalid s3ImageQuality. Expected an integer from 1 to 100 in config/default.js.');
     }
   }
 }

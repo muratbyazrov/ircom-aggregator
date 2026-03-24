@@ -11,6 +11,7 @@ Telegram aggregator for marketplace-like posts with structured extraction into S
 - `src/parsing/adParser.js`: ad/service detection + title/description/price/contact/category extraction
 - `src/parsing/taxiParser.js`: taxi/travel extraction (route, direction, departure, seats) + backend departure normalization
   - also skips already-expired taxi offers when departure time can be resolved
+  - in taxi mode also removes saved offers that fall out of the latest scanned Telegram window for a source
   - prefers per-seat fare over full-car price when both are present in one post
 - `src/media/photoStorage.js`: optional media download and local file storage
 - `src/telegram/auth.js`: Telegram interactive auth flow and auth error handling

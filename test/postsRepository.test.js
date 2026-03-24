@@ -146,3 +146,32 @@ test('changing taxi-specific fields resets backend sync state', () => {
     cleanup();
   }
 });
+
+test('listPostsBySourceFromMsgId returns only posts inside the current source scan window', () => {
+  const { dbPath, cleanup } = createTempDbPath();
+
+  try {
+    const taxiRepo = createPostsRepository(dbPath, { tableName: 'taxi_posts' });
+    taxiRepo.upsert(buildPost(10));
+    taxiRepo.upsert(buildPost(20));
+    taxiRepo.upsert({
+      ...buildPost(30),
+      source: 'other-source',
+    });
+    taxiRepo.upsert(buildPost(40));
+
+    const sourceWindowPosts = taxiRepo.listPostsBySourceFromMsgId({
+      source: 'test-source',
+      minMsgId: 20,
+    });
+
+    assert.deepEqual(
+      sourceWindowPosts.map((post) => post.msg_id),
+      [20, 40]
+    );
+
+    taxiRepo.close();
+  } finally {
+    cleanup();
+  }
+});

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { extractTaxiOfferIdFromBackendResponse } from '../src/app.js';
+import { extractTaxiOfferIdFromBackendResponse } from '../src/sync.js';
 
 test('extracts taxiOfferId from wrapped backend response payload', () => {
   assert.equal(extractTaxiOfferIdFromBackendResponse({ data: { taxiOfferId: 123 } }), 123);

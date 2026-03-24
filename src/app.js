@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 
@@ -6,744 +5,94 @@ import { loadConfig } from './config.js';
 import { createPostsRepository } from './db/postsRepository.js';
 import { createIrcomApiClient } from './api/ircomClient.js';
 import { createMediaUploader } from './api/mediaUploader.js';
-import {
-  looksLikeAd,
-  detectPostKind,
-  extractStructuredData,
-  buildContentHash,
-  buildDuplicateFingerprint,
-  truncateTitle,
-  FALLBACK_LISTING_CATEGORY_BY_CODE,
-  FALLBACK_SERVICE_CATEGORY_BY_CODE,
-} from './parsing/adParser.js';
-import {
-  looksLikeTaxiOffer,
-  extractTaxiStructuredData,
-  resolveTaxiDepartureAt,
-  isTaxiOfferExpired,
-} from './parsing/taxiParser.js';
+import { buildContentHash, buildDuplicateFingerprint } from './parsing/adParser.js';
+import { isTaxiOfferExpired, resolveTaxiDepartureAt } from './parsing/taxiParser.js';
 import { createPhotoStorage } from './media/photoStorage.js';
 import { buildAuthParams, logAuthError } from './telegram/auth.js';
+import {
+  normalizeSenderId,
+  normalizeTelegramMessageDate,
+  hasVisualMedia,
+  buildRetentionCutoffIso,
+  cleanupLocalPhotos,
+  getPostPhotoPaths,
+  buildPermalink,
+} from './utils.js';
+import {
+  getStorageTableName,
+  shouldKeepTextByFilter,
+  extractPostData,
+  loadCategoryResolver,
+  buildMessageUnits,
+  recordTaxiSkip,
+  formatTaxiSkipSummary,
+} from './pipeline.js';
+import {
+  buildBackendSyncTarget,
+  syncPostToBackend,
+  deleteTaxiPostFromBackend,
+} from './sync.js';
+import {
+  findStaleDuplicatePosts,
+  createDuplicateIndex,
+  comparePostsByRecency,
+  cleanupExpiredBackendDepartures,
+  runDedupMode,
+} from './dedup.js';
 
-const MAX_PHOTOS_PER_LISTING = 8;
-const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
+export { runDedupMode } from './dedup.js';
+export { extractTaxiOfferIdFromBackendResponse } from './sync.js';
 
-function buildPermalink(entity, msgId) {
-  const username = entity?.username;
-  return username ? `https://t.me/${username}/${msgId}` : null;
-}
-
-function normalizeSenderId(senderId) {
-  if (senderId === null || senderId === undefined) return null;
-  if (typeof senderId === 'string') return senderId;
-  if (typeof senderId === 'number' || typeof senderId === 'bigint') return String(senderId);
-  if (typeof senderId?.toString === 'function') {
-    const value = senderId.toString();
-    return value && value !== '[object Object]' ? value : null;
-  }
-  return null;
-}
-
-function normalizeTelegramMessageDate(dateValue) {
-  if (dateValue === null || dateValue === undefined) return null;
-
-  if (dateValue instanceof Date) {
-    return Number.isNaN(dateValue.getTime()) ? null : dateValue.toISOString();
-  }
-
-  if (typeof dateValue === 'number' && Number.isFinite(dateValue)) {
-    const normalizedDate = new Date(dateValue * 1000);
-    return Number.isNaN(normalizedDate.getTime()) ? null : normalizedDate.toISOString();
-  }
-
-  if (typeof dateValue === 'bigint') {
-    const normalizedDate = new Date(Number(dateValue) * 1000);
-    return Number.isNaN(normalizedDate.getTime()) ? null : normalizedDate.toISOString();
-  }
-
-  const text = String(dateValue || '').trim();
-  if (!text) return null;
-
-  const parsedDate = new Date(text);
-  return Number.isNaN(parsedDate.getTime()) ? null : parsedDate.toISOString();
-}
-
-function hasVisualMedia(message) {
-  const hasPhoto = Boolean(message?.photo);
-  const hasImageDoc = String(message?.media?.document?.mimeType || '').startsWith('image/');
-  return hasPhoto || hasImageDoc;
-}
-
-function getGroupedId(message) {
-  const raw = message?.groupedId;
-  if (raw === null || raw === undefined) return null;
-  const value = String(raw).trim();
-  return value && value !== '[object Object]' ? value : null;
-}
-
-function buildRetentionCutoffIso(retentionDays) {
-  if (!Number.isInteger(retentionDays) || retentionDays <= 0) return null;
-  return new Date(Date.now() - (retentionDays * 24 * 60 * 60 * 1000)).toISOString();
-}
-
-function cleanupLocalPhotos(photoPaths) {
-  for (const photoPath of photoPaths) {
-    const normalizedPath = String(photoPath || '').trim();
-    if (!normalizedPath || !fs.existsSync(normalizedPath)) continue;
-    try {
-      fs.unlinkSync(normalizedPath);
-    } catch {
-      // Ignore cleanup errors for local photos.
-    }
-  }
-}
-
-function parseStoredPhotoPaths(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item || '').trim()).filter(Boolean);
-  }
-
-  const normalizedValue = String(value || '').trim();
-  if (!normalizedValue) return [];
-
-  try {
-    const parsed = JSON.parse(normalizedValue);
-    if (Array.isArray(parsed)) {
-      return parsed.map((item) => String(item || '').trim()).filter(Boolean);
-    }
-  } catch {
-    // Fall back to legacy single-path storage.
-  }
-
-  return [normalizedValue];
-}
-
-function getPostPhotoPaths(post) {
-  const multiValue = post?.photo_paths ?? post?.photoPaths;
-  const parsedMultiValue = parseStoredPhotoPaths(multiValue);
-  if (parsedMultiValue.length > 0) {
-    return parsedMultiValue;
-  }
-  return parseStoredPhotoPaths(post?.photo_path || post?.photoPath);
-}
-
-function buildPostPreview(text, maxLength = 90) {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return '';
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, maxLength - 1).trim()}...`;
-}
-
-function logTaxiSkip({ source, msgId, reason, text }) {
-  const preview = buildPostPreview(text);
-  const suffix = preview ? ` | ${preview}` : '';
-  console.log(`Skip taxi ${source}/${msgId}: ${reason}${suffix}`);
-}
-
-function recordTaxiSkip({ config, stats, source, msgId, reason, text }) {
-  if (config?.pipelineMode !== 'taxi') return;
-  stats[reason] = Number(stats[reason] || 0) + 1;
-  if (config?.taxiVerboseSkips) {
-    logTaxiSkip({ source, msgId, reason, text });
-  }
-}
-
-function formatTaxiSkipSummary(stats) {
-  const entries = Object.entries(stats || {})
-    .filter(([, count]) => Number(count) > 0)
-    .sort((left, right) => right[1] - left[1]);
-
-  if (entries.length === 0) return '';
-  return entries.map(([reason, count]) => `${reason}: ${count}`).join(' | ');
-}
-
-function splitMultiValueField(value) {
-  return String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function getFirstMultiValue(value, { prefix = '' } = {}) {
-  const firstValue = splitMultiValueField(value)[0] || null;
-  if (!firstValue) return null;
-  return prefix && !firstValue.startsWith(prefix) ? `${prefix}${firstValue}` : firstValue;
-}
-
-function normalizeCategoryLookupKey(value) {
-  return String(value || '').trim().toLowerCase();
-}
-
-function getStorageTableName(config) {
-  if (config?.pipelineMode === 'taxi') return 'taxi_posts';
-  return config?.pipelineMode === 'services' ? 'service_posts' : 'posts';
-}
-
-function matchesPipelineMode(text, config) {
-  if (config?.pipelineMode === 'taxi') {
-    return looksLikeTaxiOffer(text);
-  }
-  const detectedKind = detectPostKind(text);
-  return config?.pipelineMode === 'services' ? detectedKind === 2 : detectedKind !== 2;
-}
-
-function shouldKeepTextByFilter(text, config) {
-  if (config?.pipelineMode === 'taxi') {
-    return looksLikeTaxiOffer(text);
-  }
-
-  return looksLikeAd(text, config.adKeywords) && matchesPipelineMode(text, config);
-}
-
-function extractPostData(text, config) {
-  if (config?.pipelineMode === 'taxi') {
-    return extractTaxiStructuredData(text);
-  }
-
-  return extractStructuredData(text, { kind: config.postApiKind });
-}
-
-function getFallbackCategoryMap(kind) {
-  return Number(kind) === 2 ? FALLBACK_SERVICE_CATEGORY_BY_CODE : FALLBACK_LISTING_CATEGORY_BY_CODE;
-}
-
-function createCategoryResolver(categories, config, kind) {
-  const byCode = new Map();
-  const byName = new Map();
-
-  for (const category of Array.isArray(categories) ? categories : []) {
-    const normalizedCode = String(category?.code || '').trim();
-    const normalizedName = String(category?.name || '').trim();
-    const categoryId = Number(category?.categoryId || 0);
-
-    if (!normalizedCode || !normalizedName || !Number.isInteger(categoryId) || categoryId <= 0) {
-      continue;
-    }
-
-    const resolved = { categoryId, categoryCode: normalizedCode, categoryName: normalizedName };
-    byCode.set(normalizedCode, resolved);
-    byName.set(normalizeCategoryLookupKey(normalizedName), resolved);
-  }
-
-  const fallbackDefaultName = String(config?.postApiDefaultCategory || '').trim() || 'Другое';
-  const fallbackCategoryByCode = getFallbackCategoryMap(kind);
-
-  const resolve = (inputCategory) => {
-    const rawValue = String(inputCategory || '').trim();
-    const byExactCode = rawValue ? byCode.get(rawValue) : null;
-    if (byExactCode) return byExactCode;
-
-    const fallbackName = rawValue
-      ? (fallbackCategoryByCode[rawValue] || rawValue)
-      : fallbackDefaultName;
-    const byResolvedName = byName.get(normalizeCategoryLookupKey(fallbackName));
-    if (byResolvedName) return byResolvedName;
-
-    const byDefaultCode = byCode.get(String(config?.postApiDefaultCategoryCode || '').trim());
-    if (byDefaultCode) return byDefaultCode;
-
-    const byDefaultName = byName.get(normalizeCategoryLookupKey(fallbackDefaultName));
-    if (byDefaultName) return byDefaultName;
-
+async function cleanupTaxiPosts({ posts, config, db, postApi, duplicateIndex, failureLabel }) {
+  if (!Array.isArray(posts) || posts.length === 0) {
     return {
-      categoryId: null,
-      categoryCode: rawValue || null,
-      categoryName: fallbackName || 'Другое',
+      deletedLocalPosts: 0,
+      deletedBackendPosts: 0,
+      failedBackendDeletes: 0,
     };
-  };
-
-  return { resolve, size: byCode.size };
-}
-
-async function loadCategoryResolver({ config, postApi }) {
-  if (!config.postApiEnabled || config?.pipelineMode === 'taxi') {
-    return createCategoryResolver([], config, config.postApiKind);
   }
 
-  try {
-    const categories = await postApi.getCategories(config.postApiKind);
-    return createCategoryResolver(categories, config, config.postApiKind);
-  } catch (error) {
-    console.warn(`Failed to load categories from backend, using fallback mapping: ${error?.message || error}`);
-    return createCategoryResolver([], config, config.postApiKind);
-  }
-}
+  cleanupLocalPhotos(posts.flatMap((post) => getPostPhotoPaths(post)));
 
-function buildListingPayload(post, config, categoryResolver) {
-  const listingPhone = getFirstMultiValue(post?.contact_phone || post?.contactPhone);
-  const listingTelegram = getFirstMultiValue(post?.contact_username || post?.contactUsername, { prefix: '@' });
-  const resolvedCategory = categoryResolver.resolve(post?.category || post?.categoryCode);
-  const fallbackCategoryName = String(post?.category_name || post?.categoryName || '').trim();
-  const categoryName = resolvedCategory.categoryName || fallbackCategoryName || config.postApiDefaultCategory || 'Другое';
-
-  return {
-    accountId: config.postApiAccountId,
-    kind: config.postApiKind,
-    ...(resolvedCategory.categoryId ? { categoryId: resolvedCategory.categoryId } : {}),
-    category: categoryName,
-    title: truncateTitle(String(post?.title || '').trim() || 'Объявление', 50),
-    description: String(post?.description || '').trim(),
-    price: Number(post?.price_value || post?.priceValue) || config.postApiDefaultPrice || 1,
-    ...(listingPhone ? { phone: listingPhone } : {}),
-    ...(listingTelegram ? { telegram: listingTelegram } : {}),
-    importMeta: {
-      source: post?.source,
-      msgId: post?.msg_id ?? post?.msgId,
-      date: post?.date,
-      permalink: post?.permalink || null,
-      contentHash: post?.content_hash || post?.contentHash || null,
-      photoObjectKeys: [],
-    },
-  };
-}
-
-function clampText(value, maxLength, fallback = '') {
-  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return fallback;
-  if (normalized.length <= maxLength) return normalized;
-  return normalized.slice(0, maxLength).trim();
-}
-
-function getNormalizedPhoneValue(value) {
-  const raw = getFirstMultiValue(value);
-  if (!raw) return null;
-  const normalized = String(raw).replace(/[^\d+]/g, '').trim();
-  return normalized || null;
-}
-
-function getNormalizedPhoneValues(value) {
-  return splitMultiValueField(value)
-    .map((item) => String(item).replace(/[^\d+]/g, '').trim())
-    .filter(Boolean);
-}
-
-function getNormalizedTelegramValue(value) {
-  const raw = getFirstMultiValue(value, { prefix: '@' });
-  if (!raw) return null;
-  return String(raw).trim() || null;
-}
-
-function getTaggedContactValue(contactText, prefixes) {
-  for (const part of String(contactText || '').split(';')) {
-    const normalizedPart = String(part || '').trim();
-    for (const prefix of prefixes) {
-      if (!normalizedPart.startsWith(prefix)) continue;
-      const value = normalizedPart.slice(prefix.length).trim();
-      if (value) return value;
-    }
-  }
-  return null;
-}
-
-function hasWhatsappMention(text) {
-  return /(?:wh(?:a)?ts?\s*app|wats?\s*app|ватсап|ватсапп|вацап|вацап|ваца|вац|вотсап|васап)/i.test(String(text || ''));
-}
-
-function getNormalizedTelegramContactValue(contactUsername, contactText) {
-  const username = getNormalizedTelegramValue(contactUsername);
-  if (username) return username;
-
-  const taggedPhone = getTaggedContactValue(contactText, ['tg-phone:']);
-  if (taggedPhone) return taggedPhone;
-
-  return null;
-}
-
-function buildTaxiPayload(post, config) {
-  const rawText = String(post?.raw_text || post?.rawText || post?.description || '').trim();
-  const reparsed = extractTaxiStructuredData(rawText);
-  const direction = Number(reparsed.direction || post?.taxi_direction || post?.taxiDirection || 2) || 2;
-  const description = clampText(rawText || reparsed.description || post?.description, 2000, '');
-  const phoneValues = getNormalizedPhoneValues(post?.contact_phone || post?.contactPhone);
-  const phone = phoneValues[0] || getNormalizedPhoneValue(post?.contact_phone || post?.contactPhone);
-  const contactText = post?.contact_text || post?.contactText;
-  const telegram = getNormalizedTelegramContactValue(post?.contact_username || post?.contactUsername, contactText);
-  const whatsappTaggedPhone = getTaggedContactValue(contactText, ['wa:']);
-  const departureAt = resolveTaxiDepartureAt(rawText, post?.date);
-  const backendEntityId = Number(post?.backend_entity_id || post?.backendEntityId || 0);
-  if (!phone) {
-    throw new Error(`Taxi backend sync requires a phone number for ${post?.source}/${post?.msg_id}`);
-  }
-  const payload = {
-    accountId: config.postApiAccountId,
-    direction,
-    description,
-    phone,
-    price: Number(reparsed.priceValue || post?.price_value || post?.priceValue || config.postApiDefaultPrice || 1),
-    importMeta: {
-      source: post?.source,
-      msgId: post?.msg_id ?? post?.msgId,
-      date: post?.date,
-      permalink: post?.permalink || null,
-      contentHash: post?.content_hash || post?.contentHash || null,
-      photoObjectKeys: [],
-    },
-  };
-
-  if (telegram) payload.telegram = telegram;
-  if (hasWhatsappMention(rawText) || whatsappTaggedPhone) {
-    payload.whatsapp = whatsappTaggedPhone || phoneValues[1] || phone;
-  }
-  if (departureAt) payload.departureAt = departureAt;
-  if (direction === 2) {
-    const routeDirection = Number(reparsed.routeDirection || 0);
-    const fromPlace = clampText(reparsed.fromPlace || post?.taxi_from || post?.taxiFrom, 60);
-    const toPlace = clampText(reparsed.toPlace || post?.taxi_to || post?.taxiTo, 60);
-    const routeText = clampText(
-      reparsed.routeText || post?.taxi_route || post?.taxiRoute || (fromPlace && toPlace ? `${fromPlace} - ${toPlace}` : ''),
-      160
-    );
-
-    if (routeDirection === 1 || routeDirection === 2) payload.routeDirection = routeDirection;
-    if (fromPlace) payload.fromPlace = fromPlace;
-    if (toPlace) payload.toPlace = toPlace;
-    if (routeText) payload.routeText = routeText;
-  }
-
-  const vehicle = clampText(reparsed.vehicle || post?.taxi_vehicle || post?.taxiVehicle, 80);
-  if (vehicle) {
-    payload.vehicle = vehicle;
-  }
-
-  const seatsFree = Number(reparsed.seatsFree ?? post?.taxi_seats_free ?? post?.taxiSeatsFree);
-  if (Number.isInteger(seatsFree) && seatsFree >= 0) {
-    payload.seatsFree = seatsFree;
-  }
-
-  const seatsTotal = Number(reparsed.seatsTotal ?? post?.taxi_seats_total ?? post?.taxiSeatsTotal);
-  if (Number.isInteger(seatsTotal) && seatsTotal >= 1) {
-    payload.seatsTotal = seatsTotal;
-  }
-
-  return {
-    payload,
-    backendEntityId: Number.isInteger(backendEntityId) && backendEntityId > 0 ? backendEntityId : null,
-  };
-}
-
-export function extractTaxiOfferIdFromBackendResponse(response) {
-  const payload = response?.data ?? response ?? null;
-  const taxiOfferId = Number(payload?.taxiOfferId || 0);
-  return Number.isInteger(taxiOfferId) && taxiOfferId > 0 ? taxiOfferId : null;
-}
-
-function buildBackendSyncTarget(config) {
-  const endpoint = String(config?.postApiUrl || '').trim().replace(/\/+$/, '');
-  const accountId = Number(config?.postApiAccountId || 0);
-  const kind = Number(config?.postApiKind || 0);
-  return JSON.stringify({
-    endpoint,
-    accountId,
-    mode: String(config?.pipelineMode || 'ads'),
-    ...(kind > 0 ? { kind } : {}),
-  });
-}
-
-async function syncListingPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget, categoryResolver }) {
-  if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
-
-  const payload = buildListingPayload(post, config, categoryResolver);
-  const uploadedPhotos = [];
-  const originalPhotoPaths = getPostPhotoPaths(post).slice(0, MAX_PHOTOS_PER_LISTING);
-  const existingPhotoPaths = originalPhotoPaths.filter((photoPath) => fs.existsSync(photoPath));
-  const missingPhotoPathsCount = originalPhotoPaths.length - existingPhotoPaths.length;
-
-  if (missingPhotoPathsCount > 0) {
-    db.updateStoredPhotos({
-      id: post.id,
-      photoPath: existingPhotoPaths[0] || null,
-      photoPaths: existingPhotoPaths.length > 0 ? JSON.stringify(existingPhotoPaths) : null,
-    });
-    console.warn(
-      `Skipping ${missingPhotoPathsCount} missing local photo(s) for ${post.source}/${post.msg_id} during backend sync`
-    );
-  }
-
-  for (const photoPath of existingPhotoPaths) {
-    try {
-      const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath);
-      if (uploadedPhoto?.photoUrl) {
-        uploadedPhotos.push(uploadedPhoto);
-      }
-    } catch (err) {
-      console.error(`Photo upload failed for ${post.source}/${post.msg_id}: ${err?.message || err}`);
-    }
-  }
-
-  payload.photos = uploadedPhotos.map((photo) => photo.photoUrl);
-  payload.importMeta.photoObjectKeys = uploadedPhotos
-    .map((photo) => String(photo?.objectKey || '').trim())
-    .filter(Boolean);
-
-  try {
-    await postApi.createListing(payload);
-    db.markBackendSyncSuccess({ id: post.id, backendSyncTarget });
-    return { skipped: false, synced: true, uploadedPhotosCount: uploadedPhotos.length };
-  } catch (err) {
-    db.markBackendSyncFailure({ id: post.id, error: err?.message || err });
-    throw err;
-  }
-}
-
-async function syncTaxiPostToBackend({ post, config, db, postApi, mediaUploader, backendSyncTarget }) {
-  if (!config.postApiEnabled || !post?.id) return { skipped: true, reason: 'disabled-or-missing-post' };
-
-  const { payload, backendEntityId } = buildTaxiPayload(post, config);
-  const uploadedPhotos = [];
-  const originalPhotoPaths = getPostPhotoPaths(post).slice(0, 10);
-  const existingPhotoPaths = originalPhotoPaths.filter((photoPath) => fs.existsSync(photoPath));
-  const missingPhotoPathsCount = originalPhotoPaths.length - existingPhotoPaths.length;
-
-  if (missingPhotoPathsCount > 0) {
-    db.updateStoredPhotos({
-      id: post.id,
-      photoPath: existingPhotoPaths[0] || null,
-      photoPaths: existingPhotoPaths.length > 0 ? JSON.stringify(existingPhotoPaths) : null,
-    });
-    console.warn(
-      `Skipping ${missingPhotoPathsCount} missing local photo(s) for ${post.source}/${post.msg_id} during taxi backend sync`
-    );
-  }
-
-  for (const photoPath of existingPhotoPaths) {
-    try {
-      const uploadedPhoto = await mediaUploader.uploadPhotoFromPath(photoPath, { entityType: 'taxi' });
-      if (uploadedPhoto?.photoUrl) {
-        uploadedPhotos.push(uploadedPhoto);
-      }
-    } catch (err) {
-      console.error(`Taxi photo upload failed for ${post.source}/${post.msg_id}: ${err?.message || err}`);
-    }
-  }
-
-  if (uploadedPhotos.length > 0) {
-    payload.carPhotos = uploadedPhotos.map((photo) => photo.photoUrl);
-    payload.importMeta.photoObjectKeys = uploadedPhotos
-      .map((photo) => String(photo?.objectKey || '').trim())
-      .filter(Boolean);
-  }
-
-  try {
-    const response = backendEntityId
-      ? await postApi.updateTaxiOffer({ ...payload, taxiOfferId: backendEntityId })
-      : await postApi.createTaxiOffer(payload);
-    const resolvedBackendEntityId = extractTaxiOfferIdFromBackendResponse(response) || backendEntityId;
-    if (!backendEntityId && !resolvedBackendEntityId) {
-      throw new Error('Taxi backend response did not include taxiOfferId');
-    }
-    db.markBackendSyncSuccess({
-      id: post.id,
-      backendSyncTarget,
-      backendEntityId: resolvedBackendEntityId,
-    });
-    return {
-      skipped: false,
-      synced: true,
-      uploadedPhotosCount: uploadedPhotos.length,
-      backendEntityId: resolvedBackendEntityId,
-      operation: backendEntityId ? 'update' : 'create',
-    };
-  } catch (err) {
-    db.markBackendSyncFailure({ id: post.id, error: err?.message || err });
-    throw err;
-  }
-}
-
-async function syncPostToBackend(args) {
-  if (args?.config?.pipelineMode === 'taxi') {
-    return syncTaxiPostToBackend(args);
-  }
-
-  return syncListingPostToBackend(args);
-}
-
-async function deleteTaxiPostFromBackend({ post, config, postApi }) {
-  const backendEntityId = Number(post?.backend_entity_id || post?.backendEntityId || 0);
-  if (!config?.postApiEnabled || config?.pipelineMode !== 'taxi' || !Number.isInteger(backendEntityId) || backendEntityId <= 0) {
-    return { skipped: true };
-  }
-
-  await postApi.deleteTaxiOffer({
-    accountId: config.postApiAccountId,
-    taxiOfferId: backendEntityId,
-  });
-
-  return { skipped: false, deleted: true };
-}
-
-function buildTitleFingerprint(value) {
-  const normalized = String(value || '')
-    .toLowerCase()
-    .replace(/https?:\/\/\S+/g, ' ')
-    .replace(/[@#][\p{L}\p{N}_]+/gu, ' ')
-    .replace(PHONE_LIKE_RE, ' ')
-    .replace(/\b(?:19|20)\d{2}\b/gu, ' ')
-    .replace(/\b\d{2,4}\s*(?:gb|гб|tb|тб)\b/gu, ' ')
-    .replace(/\b(?:цена|стоимость)\s*\d[\d.,\s]{0,24}\b/gu, ' ')
-    .replace(/\b\d{2,}\b/gu, ' ')
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!normalized) return null;
-  const tokens = normalized.split(' ').filter((token) => token.length > 1);
-  if (tokens.length < 3) return null;
-  return tokens.slice(0, 8).join(' ');
-}
-
-function buildDuplicateIdentityKeys(post) {
-  const keys = new Set();
-  const contentHash = String(post?.content_hash || post?.contentHash || '').trim();
-  const dedupeKey = String(post?.dedupe_key || post?.dedupeKey || '').trim();
-  const senderId = normalizeSenderId(post?.sender_id || post?.senderId);
-  const titleFingerprint = buildTitleFingerprint(post?.title);
-
-  if (contentHash) {
-    keys.add(`content:${contentHash}`);
-  }
-  if (dedupeKey && senderId) {
-    keys.add(`sender:${senderId}:${dedupeKey}`);
-  }
-  if (titleFingerprint && senderId) {
-    keys.add(`sender-title:${senderId}:${titleFingerprint}`);
-  }
-  if (dedupeKey) {
-    for (const phone of splitMultiValueField(post?.contact_phone || post?.contactPhone)) {
-      keys.add(`phone:${phone}:${dedupeKey}`);
-    }
-    for (const username of splitMultiValueField(post?.contact_username || post?.contactUsername)) {
-      keys.add(`username:${username.toLowerCase()}:${dedupeKey}`);
-    }
-  }
-  if (titleFingerprint) {
-    for (const phone of splitMultiValueField(post?.contact_phone || post?.contactPhone)) {
-      keys.add(`phone-title:${phone}:${titleFingerprint}`);
-    }
-    for (const username of splitMultiValueField(post?.contact_username || post?.contactUsername)) {
-      keys.add(`username-title:${username.toLowerCase()}:${titleFingerprint}`);
-    }
-  }
-
-  return [...keys];
-}
-
-function getComparableMessageId(post) {
-  const value = Number(post?.msg_id ?? post?.msgId ?? 0);
-  return Number.isFinite(value) ? value : 0;
-}
-
-function comparePostsByRecency(left, right) {
-  const leftTime = new Date(left?.date || 0).getTime();
-  const rightTime = new Date(right?.date || 0).getTime();
-  if (leftTime !== rightTime) {
-    return leftTime - rightTime;
-  }
-
-  const leftMsgId = getComparableMessageId(left);
-  const rightMsgId = getComparableMessageId(right);
-  if (leftMsgId !== rightMsgId) {
-    return leftMsgId - rightMsgId;
-  }
-
-  const leftId = Number(left?.id || 0);
-  const rightId = Number(right?.id || 0);
-  return leftId - rightId;
-}
-
-function createDuplicateIndex(posts) {
-  const postsById = new Map();
-  const keyToPostIds = new Map();
-
-  const addPost = (post) => {
-    if (!post?.id) return;
-    postsById.set(post.id, post);
-    for (const key of buildDuplicateIdentityKeys(post)) {
-      if (!keyToPostIds.has(key)) keyToPostIds.set(key, new Set());
-      keyToPostIds.get(key).add(post.id);
-    }
-  };
-
-  const removePost = (post) => {
-    if (!post?.id) return;
-    postsById.delete(post.id);
-    for (const key of buildDuplicateIdentityKeys(post)) {
-      const ids = keyToPostIds.get(key);
-      if (!ids) continue;
-      ids.delete(post.id);
-      if (ids.size === 0) {
-        keyToPostIds.delete(key);
-      }
-    }
-  };
-
-  const findMatches = (post) => {
-    const matches = new Map();
-    for (const key of buildDuplicateIdentityKeys(post)) {
-      const ids = keyToPostIds.get(key);
-      if (!ids) continue;
-      for (const id of ids) {
-        const existingPost = postsById.get(id);
-        if (existingPost) {
-          matches.set(id, existingPost);
+  let deletedBackendPosts = 0;
+  let failedBackendDeletes = 0;
+  if (config.postApiEnabled) {
+    for (const post of posts) {
+      try {
+        const result = await deleteTaxiPostFromBackend({ post, config, postApi });
+        if (!result?.skipped) {
+          deletedBackendPosts++;
         }
+      } catch (err) {
+        failedBackendDeletes++;
+        console.error(`${failureLabel} for ${post.source}/${post.msg_id}: ${err?.message || err}`);
       }
     }
-    return [...matches.values()];
-  };
+  }
 
-  for (const post of posts) {
-    addPost(post);
+  const deletedLocalPosts = db.deletePostsByIds(posts.map((post) => post.id));
+  if (deletedLocalPosts > 0 && duplicateIndex) {
+    for (const post of posts) {
+      duplicateIndex.removePost(post);
+    }
   }
 
   return {
-    addPost,
-    removePost,
-    findMatches,
+    deletedLocalPosts,
+    deletedBackendPosts,
+    failedBackendDeletes,
   };
-}
-
-function findStaleDuplicatePosts(posts) {
-  const duplicateIndex = createDuplicateIndex([]);
-  const stalePosts = [];
-  const sortedPosts = [...posts].sort((left, right) => comparePostsByRecency(right, left));
-
-  for (const post of sortedPosts) {
-    if (duplicateIndex.findMatches(post).length > 0) {
-      stalePosts.push(post);
-      continue;
-    }
-    duplicateIndex.addPost(post);
-  }
-
-  return stalePosts;
-}
-
-function buildMessageUnits(messages) {
-  const grouped = new Map();
-  for (const message of messages) {
-    const groupedId = getGroupedId(message);
-    if (!groupedId) continue;
-    if (!grouped.has(groupedId)) grouped.set(groupedId, []);
-    grouped.get(groupedId).push(message);
-  }
-
-  const units = [];
-  const seenGroups = new Set();
-  for (const message of messages) {
-    const groupedId = getGroupedId(message);
-    if (!groupedId) {
-      units.push([message]);
-      continue;
-    }
-    if (seenGroups.has(groupedId)) continue;
-    seenGroups.add(groupedId);
-    units.push(grouped.get(groupedId) || [message]);
-  }
-  return units;
 }
 
 export async function runApp() {
-  const config = loadConfig();
+  const config = await loadConfig();
+
+  if (config.dedupOnly) {
+    const postApi = createIrcomApiClient(config);
+    await runDedupMode({ config, postApi });
+    return;
+  }
+
   const storageTableName = getStorageTableName(config);
   const db = createPostsRepository('data.db', { tableName: storageTableName });
   const postApi = createIrcomApiClient(config);
@@ -830,7 +179,7 @@ export async function runApp() {
 
     const staleDuplicatePosts = findStaleDuplicatePosts(db.listPostsForDedupe());
     if (staleDuplicatePosts.length > 0) {
-          cleanupLocalPhotos(staleDuplicatePosts.flatMap((post) => getPostPhotoPaths(post)));
+      cleanupLocalPhotos(staleDuplicatePosts.flatMap((post) => getPostPhotoPaths(post)));
       const deletedDuplicates = db.deletePostsByIds(staleDuplicatePosts.map((post) => post.id));
       console.log(`\nDeduped existing DB: removed ${deletedDuplicates} stale duplicate posts`);
     }
@@ -838,38 +187,35 @@ export async function runApp() {
     const duplicateIndex = createDuplicateIndex(db.listPostsForDedupe());
 
     if (config.pipelineMode === 'taxi') {
+      // 1. Remove locally-tracked offers whose departure time has passed.
       const expiredTaxiPosts = db.getExpiredByDepartureBefore(new Date().toISOString());
       if (expiredTaxiPosts.length > 0) {
-        cleanupLocalPhotos(expiredTaxiPosts.flatMap((post) => getPostPhotoPaths(post)));
-        if (config.postApiEnabled) {
-          let deletedBackendPosts = 0;
-          let failedBackendDeletes = 0;
-          for (const expiredPost of expiredTaxiPosts) {
-            try {
-              const result = await deleteTaxiPostFromBackend({ post: expiredPost, config, postApi });
-              if (!result?.skipped) {
-                deletedBackendPosts++;
-              }
-            } catch (err) {
-              failedBackendDeletes++;
-              console.error(`Expired taxi backend cleanup failed for ${expiredPost.source}/${expiredPost.msg_id}: ${err?.message || err}`);
-            }
-          }
-          const deletedLocalExpiredTaxiPosts = db.deletePostsByIds(expiredTaxiPosts.map((post) => post.id));
-          for (const expiredPost of expiredTaxiPosts) {
-            duplicateIndex.removePost(expiredPost);
-          }
+        const cleanupResult = await cleanupTaxiPosts({
+          posts: expiredTaxiPosts,
+          config,
+          db,
+          postApi,
+          duplicateIndex,
+          failureLabel: 'Expired taxi backend cleanup failed',
+        });
+        console.log(
+          `\nTaxi departure cleanup: removed ${cleanupResult.deletedLocalPosts} expired local posts`
+            + (config.postApiEnabled
+              ? `, ${cleanupResult.deletedBackendPosts} backend taxi offers`
+                + (cleanupResult.failedBackendDeletes > 0 ? ` (${cleanupResult.failedBackendDeletes} backend deletions failed)` : '')
+              : '')
+        );
+      }
+
+      // 2. Also sweep the backend for any expired offers that are not in local DB
+      //    (e.g. after a manual DB reset or clearBeforeRun from a previous run).
+      if (config.postApiEnabled) {
+        const { deleted, failed } = await cleanupExpiredBackendDepartures({ config, postApi });
+        if (deleted > 0 || failed > 0) {
           console.log(
-            `\nTaxi departure cleanup: removed ${deletedLocalExpiredTaxiPosts} expired local posts`
-              + `, ${deletedBackendPosts} backend taxi offers`
-              + (failedBackendDeletes > 0 ? ` (${failedBackendDeletes} backend deletions failed)` : '')
+            `Taxi backend departure sweep: deleted ${deleted} expired offers`
+              + (failed > 0 ? `, failed ${failed}` : '')
           );
-        } else {
-          const deletedLocalExpiredTaxiPosts = db.deletePostsByIds(expiredTaxiPosts.map((post) => post.id));
-          for (const expiredPost of expiredTaxiPosts) {
-            duplicateIndex.removePost(expiredPost);
-          }
-          console.log(`\nTaxi departure cleanup: removed ${deletedLocalExpiredTaxiPosts} expired local posts`);
         }
       }
     }
@@ -908,36 +254,36 @@ export async function runApp() {
     const retentionCutoffIso = buildRetentionCutoffIso(config.retentionDays);
     if (retentionCutoffIso) {
       const expiredPosts = db.getExpiredBefore(retentionCutoffIso);
-      if (expiredPosts.length > 0) {
-        cleanupLocalPhotos(expiredPosts.flatMap((post) => getPostPhotoPaths(post)));
-      }
-      const deletedExpiredPosts = db.deleteExpiredBefore(retentionCutoffIso);
-      if (deletedExpiredPosts > 0) {
-        for (const expiredPost of expiredPosts) {
-          duplicateIndex.removePost(expiredPost);
+      const shouldHandleTaxiTtlWithHelper = config.pipelineMode === 'taxi' && config.postApiEnabled;
+      let deletedExpiredPosts = 0;
+
+      if (!shouldHandleTaxiTtlWithHelper) {
+        if (expiredPosts.length > 0) {
+          cleanupLocalPhotos(expiredPosts.flatMap((post) => getPostPhotoPaths(post)));
+        }
+        deletedExpiredPosts = db.deleteExpiredBefore(retentionCutoffIso);
+        if (deletedExpiredPosts > 0) {
+          for (const expiredPost of expiredPosts) {
+            duplicateIndex.removePost(expiredPost);
+          }
         }
       }
 
       if (config.postApiEnabled) {
         try {
           if (config.pipelineMode === 'taxi') {
-            let deletedBackendPosts = 0;
-            let failedBackendDeletes = 0;
-            for (const expiredPost of expiredPosts) {
-              try {
-                const result = await deleteTaxiPostFromBackend({ post: expiredPost, config, postApi });
-                if (!result?.skipped) {
-                  deletedBackendPosts++;
-                }
-              } catch (err) {
-                failedBackendDeletes++;
-                console.error(`Taxi TTL cleanup failed for ${expiredPost.source}/${expiredPost.msg_id}: ${err?.message || err}`);
-              }
-            }
+            const cleanupResult = await cleanupTaxiPosts({
+              posts: expiredPosts,
+              config,
+              db,
+              postApi,
+              duplicateIndex,
+              failureLabel: 'Taxi TTL cleanup failed',
+            });
             console.log(
-              `\nTTL cleanup: removed ${deletedExpiredPosts} local posts`
-                + `, ${deletedBackendPosts} backend taxi offers`
-                + (failedBackendDeletes > 0 ? ` (${failedBackendDeletes} backend deletions failed)` : '')
+              `\nTTL cleanup: removed ${cleanupResult.deletedLocalPosts} local posts`
+                + `, ${cleanupResult.deletedBackendPosts} backend taxi offers`
+                + (cleanupResult.failedBackendDeletes > 0 ? ` (${cleanupResult.failedBackendDeletes} backend deletions failed)` : '')
             );
           } else {
             const cleanupResult = await postApi.cleanupImportedListings({
@@ -1011,11 +357,19 @@ export async function runApp() {
       let uploadedPhotosToApi = 0;
       let uploadPhotosFailed = 0;
       const taxiSkipStats = {};
+      const activeTaxiMsgIds = new Set();
+      let oldestFetchedMessageId = null;
 
       const fetchedMessages = [];
       for await (const message of client.iterMessages(entity, { limit: config.fetchLimit })) {
         scanned++;
         fetchedMessages.push(message);
+        const fetchedMessageId = Number(message?.id || 0);
+        if (Number.isInteger(fetchedMessageId) && fetchedMessageId > 0) {
+          oldestFetchedMessageId = oldestFetchedMessageId === null
+            ? fetchedMessageId
+            : Math.min(oldestFetchedMessageId, fetchedMessageId);
+        }
       }
 
       for (const unitMessages of buildMessageUnits(fetchedMessages)) {
@@ -1181,6 +535,9 @@ export async function runApp() {
         const savedPost = db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id });
         if (savedPost) {
           duplicateIndex.addPost(savedPost);
+          if (config.pipelineMode === 'taxi') {
+            activeTaxiMsgIds.add(primaryMessage.id);
+          }
         }
 
         let syncResult = null;
@@ -1213,6 +570,31 @@ export async function runApp() {
         }
 
         saved++;
+      }
+
+      if (config.pipelineMode === 'taxi' && oldestFetchedMessageId !== null) {
+        const sourcePostsInScanWindow = db.listPostsBySourceFromMsgId({
+          source,
+          minMsgId: oldestFetchedMessageId,
+        });
+        const staleTaxiPosts = sourcePostsInScanWindow.filter((post) => !activeTaxiMsgIds.has(post.msg_id));
+        if (staleTaxiPosts.length > 0) {
+          const cleanupResult = await cleanupTaxiPosts({
+            posts: staleTaxiPosts,
+            config,
+            db,
+            postApi,
+            duplicateIndex,
+            failureLabel: 'Stale taxi backend cleanup failed',
+          });
+          console.log(
+            `Taxi source cleanup: removed ${cleanupResult.deletedLocalPosts} stale local posts from ${source}`
+              + (config.postApiEnabled
+                ? `, ${cleanupResult.deletedBackendPosts} backend taxi offers`
+                  + (cleanupResult.failedBackendDeletes > 0 ? ` (${cleanupResult.failedBackendDeletes} backend deletions failed)` : '')
+                : '')
+          );
+        }
       }
 
       totalSaved += saved;

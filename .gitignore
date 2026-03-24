@@ -5,3 +5,5 @@ media/
 .env.*
 !.env.*.example
 data.db
+
+.claude/

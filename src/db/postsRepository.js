@@ -233,6 +233,20 @@ export function createPostsRepository(dbPath = 'data.db', { tableName = 'posts' 
       AND taxi_departure_at < @cutoff_date
     ORDER BY taxi_departure_at ASC, id ASC
   `);
+  const listPostsBySourceFromMsgIdStmt = db.prepare(`
+    SELECT
+      id,
+      source,
+      msg_id,
+      date,
+      backend_entity_id,
+      photo_path,
+      photo_paths
+    FROM ${table}
+    WHERE source = @source
+      AND msg_id >= @min_msg_id
+    ORDER BY msg_id ASC, id ASC
+  `);
   const listPostsForDedupeStmt = db.prepare(`
     SELECT
       id,
@@ -424,6 +438,14 @@ export function createPostsRepository(dbPath = 'data.db', { tableName = 'posts' 
     },
     getExpiredByDepartureBefore(cutoffDate) {
       return findExpiredByDepartureStmt.all({ cutoff_date: cutoffDate });
+    },
+    listPostsBySourceFromMsgId({ source, minMsgId }) {
+      if (!source || !Number.isInteger(minMsgId) || minMsgId <= 0) return [];
+
+      return listPostsBySourceFromMsgIdStmt.all({
+        source,
+        min_msg_id: minMsgId,
+      });
     },
     listPostsForDedupe() {
       return listPostsForDedupeStmt.all();

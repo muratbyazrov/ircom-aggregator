@@ -9,6 +9,10 @@
     "ads": "node index.js --mode=ads",
     "services": "node index.js --mode=services",
     "taxi": "node index.js --mode=taxi",
+    "dedup:ads": "TG_DEDUP_ONLY=true node index.js --mode=ads",
+    "dedup:services": "TG_DEDUP_ONLY=true node index.js --mode=services",
+    "dedup:taxi": "TG_DEDUP_ONLY=true node index.js --mode=taxi",
+    "dedup": "npm run dedup:ads && npm run dedup:services && npm run dedup:taxi",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

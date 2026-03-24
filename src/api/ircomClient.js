@@ -89,6 +89,18 @@ export function createIrcomApiClient(config) {
     return request('listing', 'cleanupImportedListings', params);
   }
 
+  async function getImportedListingsForDedup(params) {
+    return request('listing', 'getImportedListingsForDedup', params);
+  }
+
+  async function deleteImportedListingById(params) {
+    return request('listing', 'deleteImportedListingById', params);
+  }
+
+  async function getImportedTaxiOffersForDedup(params) {
+    return request('taxi', 'getImportedTaxiOffersForDedup', params);
+  }
+
   async function getCategories(kind = 1) {
     const event = Number(kind) === 2 ? 'getServiceCategories' : 'getListingCategories';
     const response = await request('dictionary', event, {});
@@ -101,6 +113,9 @@ export function createIrcomApiClient(config) {
     updateTaxiOffer,
     deleteTaxiOffer,
     cleanupImportedListings,
+    getImportedListingsForDedup,
+    deleteImportedListingById,
+    getImportedTaxiOffersForDedup,
     getCategories,
   };
 }

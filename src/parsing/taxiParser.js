@@ -1,7 +1,7 @@
 import { extractStructuredData } from './adParser.js';
 
 const MAX_DISPLAY_NAME_LENGTH = 60;
-const TAXI_POST_EXPIRY_GRACE_MS = 30 * 60 * 1000;
+export const TAXI_POST_EXPIRY_GRACE_MS = 30 * 60 * 1000;
 const TAXI_MOSCOW_OFFSET_MINUTES = 3 * 60;
 const TAXI_MOSCOW_OFFSET_MS = TAXI_MOSCOW_OFFSET_MINUTES * 60 * 1000;
 
