@@ -1,20 +1,28 @@
+# ── Stage 1: install dependencies (needs build tools for native modules) ──────
+FROM node:22-alpine AS builder
+
+RUN apk add --no-cache python3 make g++
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# ── Stage 2: production image ─────────────────────────────────────────────────
 FROM node:22-alpine
 
-# sharp uses prebuilt musl binaries on Alpine — no libvips build needed.
-# Only libc6-compat is required for some native addons on musl.
+# libc6-compat is required for some prebuilt native binaries on musl libc
 RUN apk add --no-cache libc6-compat
 
 WORKDIR /app
 
-# Install dependencies first (better layer caching)
-COPY package*.json ./
-RUN npm ci --omit=dev
+# Copy compiled node_modules from builder (no build tools in final image)
+COPY --from=builder /app/node_modules ./node_modules
 
-# Copy source
+# Copy application source
 COPY . .
 
-# Runtime data lives in a named volume so it survives container restarts.
-# TG_DB_PATH and TG_PHOTOS_DIR are set in docker-compose.yml to point here.
-VOLUME ["/app/data"]
+# Ensure the data directory exists before the app tries to write data.db
+RUN mkdir -p /app/data
 
 CMD ["node", "scheduler.js"]
