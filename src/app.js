@@ -416,6 +416,10 @@ export async function runApp() {
         const contentHash = buildContentHash(text);
         const dedupeKey = buildDuplicateFingerprint(text);
 
+        const taxiDepartureAt = config.pipelineMode === 'taxi'
+          ? resolveTaxiDepartureAt(text, primaryMessage?.date) || null
+          : null;
+
         const incomingPost = {
           source,
           msg_id: primaryMessage.id,
@@ -426,6 +430,8 @@ export async function runApp() {
           dedupe_key: dedupeKey,
           contact_phone: structured.contactPhone,
           contact_username: structured.contactUsername,
+          taxi_direction: config.pipelineMode === 'taxi' ? (structured.direction ?? null) : null,
+          taxi_departure_at: taxiDepartureAt,
         };
         if (db.hasDuplicateByContent({
           source,
@@ -532,7 +538,7 @@ export async function runApp() {
           taxi_from: structured.fromPlace || null,
           taxi_to: structured.toPlace || null,
           taxi_route: structured.routeText || null,
-          taxi_departure_at: resolveTaxiDepartureAt(text, primaryMessage?.date) || null,
+          taxi_departure_at: taxiDepartureAt,
           taxi_departure_text: structured.departureText || null,
           taxi_seats_total: structured.seatsTotal ?? null,
           taxi_seats_free: structured.seatsFree ?? null,

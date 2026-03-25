@@ -260,7 +260,9 @@ export function createPostsRepository(dbPath = 'data.db', { tableName = 'posts' 
       content_hash,
       dedupe_key,
       contact_phone,
-      contact_username
+      contact_username,
+      taxi_direction,
+      taxi_departure_at
     FROM ${table}
     ORDER BY date DESC, id DESC
   `);

@@ -60,6 +60,17 @@ export function buildDuplicateIdentityKeys(post) {
     keys.add(`title-fuzzy:${titleFingerprint}:${dedupeKey}`);
   }
 
+  const taxiDirection = post?.taxi_direction ?? post?.taxiDirection;
+  const taxiDepartureAt = post?.taxi_departure_at ?? post?.taxiDepartureAt;
+  if (taxiDirection != null && taxiDepartureAt) {
+    const departureHour = new Date(taxiDepartureAt).toISOString().slice(0, 13);
+    if (departureHour && !departureHour.startsWith('Invalid')) {
+      for (const phone of splitMultiValueField(post?.contact_phone || post?.contactPhone)) {
+        keys.add(`phone-route-time:${phone}:${taxiDirection}:${departureHour}`);
+      }
+    }
+  }
+
   return [...keys];
 }
 
