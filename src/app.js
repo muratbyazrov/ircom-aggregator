@@ -442,6 +442,9 @@ export async function runApp() {
             text,
           });
           skippedAsDuplicate++;
+          if (config.pipelineMode === 'taxi' && db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id })) {
+            activeTaxiMsgIds.add(primaryMessage.id);
+          }
           continue;
         }
         if (db.hasFuzzyDuplicate({
@@ -459,6 +462,9 @@ export async function runApp() {
             text,
           });
           skippedAsDuplicate++;
+          if (config.pipelineMode === 'taxi' && db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id })) {
+            activeTaxiMsgIds.add(primaryMessage.id);
+          }
           continue;
         }
 
@@ -478,6 +484,9 @@ export async function runApp() {
               text,
             });
             skippedAsDuplicate++;
+            if (config.pipelineMode === 'taxi' && db.getPostBySourceAndMsgId({ source, msgId: primaryMessage.id })) {
+              activeTaxiMsgIds.add(primaryMessage.id);
+            }
             continue;
           }
 
