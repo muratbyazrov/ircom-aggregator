@@ -1,6 +1,6 @@
 export default {
   pipelineMode: 'taxi',
-  retentionDays: 1,
+  retentionDays: 3,
   sources: [
     'channelfellowtravelersTskhVl',
   ],
