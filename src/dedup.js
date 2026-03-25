@@ -189,6 +189,8 @@ export function buildBackendItemDedupPost(item, { isTaxi = false } = {}) {
     contact_phone: item.phone || null,
     contact_username: item.telegram || null,
     sender_id: null,
+    taxi_direction: item.routeDirection ?? null,
+    taxi_departure_at: item.departureAt || null,
   };
 }
 
