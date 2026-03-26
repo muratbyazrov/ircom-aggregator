@@ -19,6 +19,13 @@ test('does not multiply full amounts with thousand suffix again', () => {
   assert.equal(extractPriceValue('900000 тысяч'), 900000);
 });
 
+test('parses тр and тыр as thousand-ruble shorthand', () => {
+  assert.equal(extractPriceValue('4 тр'), 4000);
+  assert.equal(extractPriceValue('Цена 15тр'), 15000);
+  assert.equal(extractPriceValue('10 тыр'), 10000);
+  assert.equal(extractPriceValue('отдам за 7тр'), 7000);
+});
+
 test('parses single-group thousand shorthand as millions', () => {
   assert.equal(extractPriceValue('Цена 1,400т'), 1400000);
   assert.equal(extractPriceValue('срочно 1.200т'), 1200000);

@@ -4,7 +4,7 @@ const MAX_TITLE_LENGTH = 50;
 const PHONE_LIKE_RE = /(?<![\d,.])(?:\+?\d{10,15}|\+?\d{1,4}(?:[\s()-]+\d{1,4}){2,})(?![\d])/gu;
 const TELEGRAM_MARKER_PATTERN = '(?:telegram|телеграм(?:м)?|телега|тг|tg)';
 const WHATSAPP_MARKER_PATTERN = '(?:wh(?:a)?ts?\\s*app|wats?\\s*app|ватсап|ватсапп|вацап|вацап|ваца|вац|вотсап|васап)';
-const PRICE_HINT_RE = /(цена|стоимость|продаю\s+за|за\s+\d|отдам|всего|итог|руб|₽|тыс|тысяч|торг|🍋|млн|мл)/i;
+const PRICE_HINT_RE = /(цена|стоимость|продаю\s+за|за\s+\d|отдам|всего|итог|руб|₽|тыс|тысяч|тыр|тр(?![а-яё])|торг|🍋|млн|мл)/i;
 const LISTING_INTENT_RE = /(продам|продаю|продается|продаётся|продажа|продажи|отдам|куплю|сдам|сдается|сдаётся|сниму|аренда|обмен|ваканси|ищу|ищем|требуетс|зарплат|резюме)/i;
 const SERVICE_INTENT_RE = /(услуг|оказываю|предлагаю услуги|на дому|с выездом|выезд|мастер на час|маникюр|педикюр|бров|ресниц|парикмахер|косметолог|сантехник|электрик|репетитор|курсы|обучен|уборк|клининг|шиномонтаж|автосервис|разработка сайтов|telegram-бот|telegram bot|телеграм-бот|чат-бот|бот для|бот на заказ|ремонт[а-я]* автостек|ремонт[а-я]* лобов|ремонт[а-я]* квартир|ремонт[а-я]* под ключ|демонтаж|монтаж|укладка кафеля)/i;
 const VALID_TELEGRAM_USERNAME_RE = /^[a-zA-Z][a-zA-Z0-9_]{3,31}$/;
@@ -316,7 +316,7 @@ function extractPrice(text) {
     candidates.push(item);
   }
 
-  const valueWithCurrency = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс(?:яч(?:а|и)?)?|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z]))/gi;
+  const valueWithCurrency = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|тыс(?:яч(?:а|и)?)?|тыр(?![а-яё])|тр(?![а-яё])|т(?![a-zа-я])|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z]))/gi;
   let match;
   while ((match = valueWithCurrency.exec(rawWithoutPhones)) !== null) {
     if (isLikelyMileageCandidate(rawWithoutPhones, match.index || 0, match[0], match[2])) continue;
@@ -359,7 +359,7 @@ function parsePriceCandidatesFromFragment(fragment, allowBareNumber = false) {
     result.push(item);
   }
 
-  const re = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)(?:\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|т(?![a-zа-я])|тыс(?:яч(?:а|и)?)?|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z])))?/gi;
+  const re = /(\d{1,3}(?:[ .,\t]\d{3})+|\d{1,9}(?:[.,]\d{1,2})?)(?:\s*(₽|руб(?:\.|лей)?|р(?![a-zа-я])|тыс(?:яч(?:а|и)?)?|тыр(?![а-яё])|тр(?![а-яё])|т(?![a-zа-я])|k(?![a-z])|к(?![a-zа-я])|млн|мл|m(?![a-z])))?/gi;
   let match;
   while ((match = re.exec(rawFragment)) !== null) {
     const hasSuffix = Boolean(match[2]);
@@ -528,6 +528,7 @@ function normalizePriceSuffix(rawSuffix) {
   if (suffix === 'k') return 'k';
   if (suffix === 'к') return 'к';
   if (suffix.startsWith('тыс') || suffix.startsWith('тысяч')) return 'тыс';
+  if (suffix === 'тр' || suffix === 'тыр') return 'тыс';
   if (suffix === 'млн') return 'млн';
   if (suffix === 'мл') return 'мл';
   if (suffix === 'm') return 'm';
