@@ -194,7 +194,7 @@ export async function loadConfig(options = {}) {
     postApiRequested,
     postApiEnabled: postApiRequested,
     postApiDefaultCategory: String(env.TG_POST_API_DEFAULT_CATEGORY || fc.postApiDefaultCategory || 'Другое').trim(),
-    postApiDefaultPrice: Number(env.TG_POST_API_DEFAULT_PRICE || fc.postApiDefaultPrice || 1),
+    postApiDefaultPrice: Number(env.TG_POST_API_DEFAULT_PRICE || fc.postApiDefaultPrice) || null,
     postApiTimeoutMs: Number(env.TG_POST_API_TIMEOUT_MS || fc.postApiTimeoutMs || 15000),
     fetchLimit: Number(env.TG_FETCH_LIMIT || fc.fetchLimit || 100),
     onlyAds: parseBool(env.TG_ONLY_ADS, fc.onlyAds ?? true),
