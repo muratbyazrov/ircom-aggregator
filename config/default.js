@@ -16,7 +16,7 @@ export default {
 
   // Интеграция с ircom-api
   postApiEnabled: true,
-  postApiDefaultPrice: 1,
+  postApiDefaultPrice: null,
   postApiTimeoutMs: 15000,
 
   // Загрузка фото в S3

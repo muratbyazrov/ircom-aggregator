@@ -124,7 +124,7 @@ export function buildTaxiPayload(post, config) {
     direction,
     description,
     phone,
-    price: Number(reparsed.priceValue || post?.price_value || post?.priceValue || config.postApiDefaultPrice || 1),
+    price: Number(reparsed.priceValue || post?.price_value || post?.priceValue) || (config.postApiDefaultPrice ?? null),
     importMeta: {
       source: post?.source,
       msgId: post?.msg_id ?? post?.msgId,
