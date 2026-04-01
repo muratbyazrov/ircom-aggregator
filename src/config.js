@@ -271,8 +271,8 @@ function validateConfig(config) {
     if (config.pipelineMode !== 'taxi' && ![1, 2].includes(config.postApiKind)) {
       throw new Error('Invalid postApiKind. Expected 1 (ads) or 2 (services) in config file.');
     }
-    if (!Number.isFinite(config.postApiDefaultPrice) || config.postApiDefaultPrice <= 0) {
-      throw new Error('Invalid postApiDefaultPrice. Expected a positive number in config/default.js.');
+    if (config.postApiDefaultPrice !== null && (!Number.isFinite(config.postApiDefaultPrice) || config.postApiDefaultPrice <= 0)) {
+      throw new Error('Invalid postApiDefaultPrice. Expected a positive number or null in config/default.js.');
     }
     if (!Number.isInteger(config.postApiTimeoutMs) || config.postApiTimeoutMs <= 0) {
       throw new Error('Invalid postApiTimeoutMs. Expected a positive integer in config/default.js.');
