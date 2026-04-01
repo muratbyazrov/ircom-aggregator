@@ -90,7 +90,7 @@ export function buildListingPayload(post, config, categoryResolver) {
     category: categoryName,
     title: truncateTitle(String(post?.title || '').trim() || 'Объявление', 50),
     description: String(post?.description || '').trim(),
-    price: Number(post?.price_value || post?.priceValue) || config.postApiDefaultPrice ?? null,
+    price: Number(post?.price_value || post?.priceValue) || (config.postApiDefaultPrice ?? null),
     ...(listingPhone ? { phone: listingPhone } : {}),
     ...(listingTelegram ? { telegram: listingTelegram } : {}),
     importMeta: {
