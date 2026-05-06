@@ -25,26 +25,5 @@ services:
       # Persist SQLite DB and downloaded media between container restarts
       - aggregator_data:/app/data
 
-  tg-bot:
-    build:
-      context: ../ircom-tg-bot
-    restart: unless-stopped
-
-    # Secrets: BOT_TOKEN, ADMIN_CHAT_ID, WEBAPP_URL, API_URL, and optional PORT
-    env_file: ../ircom-tg-bot/.env
-
-    environment:
-      BOT_DB_PATH: /app/data/bot.db
-      # Digest cron schedule (cron syntax, Europe/Moscow timezone)
-      # DIGEST_FETCH_CRON: "0 9 * * *"
-      # DIGEST_SEND_CRON:  "0 10 * * *"
-
-    ports:
-      - "3000:3000"
-
-    volumes:
-      - tg_bot_data:/app/data
-
 volumes:
   aggregator_data:
-  tg_bot_data:
